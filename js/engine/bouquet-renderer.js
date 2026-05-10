@@ -325,9 +325,14 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
   const H = h;
   const bCx = x + W * 0.5;
   const tall = H > W * 1.08;
-  const bCy = y + H * (tall ? 0.27 : 0.32);
-  const bowY = y + H * (tall ? 0.67 : 0.62);
-  const rySpread = tall ? 0.65 : 0.6;
+  // 略下移花束重心，减少区域底部相对统计条的留白
+  const bCy = y + H * (tall ? 0.29 : 0.35);
+  const ribbonBelow = W * 0.08 * 1.65 + 6;
+  let bowY = y + H * (tall ? 0.70 : 0.65);
+  if (bowY + ribbonBelow > y + H) {
+    bowY = Math.max(y + H * 0.48, y + H - ribbonBelow);
+  }
+  const rySpread = tall ? 0.68 : 0.63;
   const baseR = Math.min(W, H) * 0.138;
 
   for (let i = 0; i < count; i++) {
