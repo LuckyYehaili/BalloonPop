@@ -1,0 +1,9 @@
+.DS_Store
+node_modules/
+*.log
+npm-debug.log*
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo

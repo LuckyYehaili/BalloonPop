@@ -1,0 +1,19 @@
+{
+  "description": "不准爆！- 微信小游戏",
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "setting": {
+    "urlCheck": true,
+    "es6": false,
+    "postcss": true,
+    "minified": false,
+    "enhance": false
+  },
+  "compileType": "game",
+  "libVersion": "3.15.1",
+  "appid": "wx872511a1f35fb6cf",
+  "projectname": "BalloonPop",
+  "condition": {}
+}
