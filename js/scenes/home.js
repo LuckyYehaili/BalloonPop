@@ -16,7 +16,6 @@ const UI_IMG = {
   liveRank: 'images/ui/live-rank.png',      // 实时排名条左侧图标
   collection: 'images/ui/collection.png',   // 底栏-气球图鉴
   profile: 'images/ui/profile.png',         // 底栏-我的
-  teamDetail: 'images/ui/teamdetail.png',   // 主卡-查看战队详情
   teamEmpty: 'images/ui/teamempty.png',     // 未入队主卡-中上方占位图
   popLogo: 'images/ui/POP-logo.png'         // 顶部 Hero 主视觉 LOGO
 };
@@ -454,7 +453,7 @@ module.exports = {
 
     if (state.hasTeam) {
       // —— 已加入战队：展示战队名、徽章、人数、3 项数据、查看详情、开始挑战 ——
-      // 布局原则：顶/底 PAD 相等；按钮统一倒角；开始挑战在「查看战队详情」按钮下方。
+      // 布局原则：顶/底 PAD 相等；按钮统一倒角；开始挑战在「详情 / 邀请」双按钮下方。
       const PAD = 20;                  // 卡片顶/底内边距（保持上下一致）
       const badgeS = 52;
       const statH = 54;
@@ -537,20 +536,21 @@ module.exports = {
         drawText(ctx, s.lab, ix + iw / 2, innerY + 44, 'rgba(255,255,255,0.38)', 12, 'center', undefined, 400);     // 标签（统一 12 号）
       });
 
-      // 查看战队详情入口（先于开始挑战按钮，icon+文字+› 整组居中）
-      _drawNeonCard(ctx, cardX + 16, linkY, cardW - 32, linkH, btnRadius, 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.12)', 1);
-      const linkText = '查看战队详情与贡献榜 ›';
-      const linkIconSize = 16;
-      const linkGap = 16;
-      const linkTextW = measureText(ctx, linkText, 12, 400);
-      const linkTotalW = linkIconSize + linkGap + linkTextW;
-      const linkBtnCx = cardX + 16 + (cardW - 32) / 2;
-      const linkIconX = linkBtnCx - linkTotalW / 2;
-      const linkTextX = linkIconX + linkIconSize + linkGap;
+      // 查看战队详情 / 邀请队员：并列同式霓虹底按钮，无图标
+      const linkMidGap = 10;
+      const linkBtnW = (cardW - 32 - linkMidGap) / 2;
+      const linkLeftX = cardX + 16;
+      const linkRightX = linkLeftX + linkBtnW + linkMidGap;
       const linkCy = linkY + linkH / 2;
-      _drawIconFit(ctx, UI_IMG.teamDetail, linkIconX, linkCy - linkIconSize / 2, linkIconSize, linkIconSize, scaleY);
-      drawText(ctx, linkText, linkTextX, linkCy, 'rgba(255,255,255,0.5)', 12, 'left', undefined, 400);
-      scene.manager.addTouchable(cardX + 16, sy(linkY, linkH), cardW - 32, sh(linkH), 'goToTeamDetail');
+      _drawNeonCard(ctx, linkLeftX, linkY, linkBtnW, linkH, btnRadius, 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.12)', 1);
+      _drawNeonCard(ctx, linkRightX, linkY, linkBtnW, linkH, btnRadius, 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.12)', 1);
+      const detailLabel = '查看战队详情与贡献榜';
+      let detailFs = 12;
+      while (detailFs >= 10 && measureText(ctx, detailLabel, detailFs, 400) > linkBtnW - 10) detailFs -= 1;
+      drawText(ctx, detailLabel, linkLeftX + linkBtnW / 2, linkCy, 'rgba(255,255,255,0.55)', detailFs, 'center', undefined, 400);
+      drawText(ctx, '邀请队员', linkRightX + linkBtnW / 2, linkCy, 'rgba(255,255,255,0.55)', 12, 'center', undefined, 400);
+      scene.manager.addTouchable(linkLeftX, sy(linkY, linkH), linkBtnW, sh(linkH), 'goToTeamDetail');
+      scene.manager.addTouchable(linkRightX, sy(linkY, linkH), linkBtnW, sh(linkH), 'inviteTeammatesFromHome');
 
       // 开始挑战主按钮（紫→粉渐变，与「邀请队员」按钮配色统一）
       ctx.save();
@@ -714,6 +714,22 @@ module.exports = {
   goToTeamDetail() {                           // 战队详情入口；未入队则跳创建流程
     if (!state.hasTeam) { this.manager.switchTo('team', { action: 'create' }); return; }
     this.manager.switchTo('team', { tab: 'my' });
+  },
+  inviteTeammatesFromHome() {                  // 与战队页一致：调起分享邀请
+    if (!state.hasTeam) {
+      this.manager.switchTo('team', { action: 'create' });
+      return;
+    }
+    if (typeof wx !== 'undefined' && wx.shareAppMessage) {
+      try {
+        wx.shareAppMessage({
+          title: '一起来「不准爆！」战队：' + (state.teamName || '气球挑战'),
+          imageUrl: ''
+        });
+      } catch (e) {
+        showToast('请使用右上角菜单分享');
+      }
+    } else showToast('请使用右上角菜单分享');
   },
   goToCreateTeam() {                           // 创建/加入战队
     this.manager.switchTo('team', { action: 'create' });
