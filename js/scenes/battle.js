@@ -8,7 +8,7 @@
 //   6. 完美充气改为绿色矢量气球 + 大按钮 + 进度圆点同行计数
 //   7. 全局弹窗左右各 40（宽 W-80）；标题 ≤18 / 正文与按钮 14 / 辅助 12
 //   8. 重开 toast 统一 90% 不透明 / 14px
-const { drawBackground, drawText, drawButton, drawButtonGradient, drawImage, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, LEVEL_BG, beginScrollView, endScrollView, drawWrappedText } = require('../engine/canvas-ui');
+const { drawBackground, drawText, drawButton, drawButtonGradient, drawImage, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, LEVEL_BG, beginScrollView, endScrollView, drawWrappedText, drawModalBackground } = require('../engine/canvas-ui');
 const { drawBalloon, drawBalloonShape, spawnExplosion, resetParticles, getBalloonCenter } = require('../engine/balloon-renderer');
 const { drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 const { drawGauge } = require('../engine/gauge-renderer');
@@ -26,9 +26,11 @@ function _paidBalloonTypesOrdered() {
   const list = BALLOON_TYPES.filter(b => b.isPaid);
   const order = new Map(list.map((b, i) => [b.id, i]));
   return list.slice().sort((a, b) => {
-    const oa = store.hasBalloon(a.id);
-    const ob = store.hasBalloon(b.id);
+    const qa = store.getBalloonQuantity(a.id) || 0;
+    const qb = store.getBalloonQuantity(b.id) || 0;
+    const oa = qa > 0, ob = qb > 0;
     if (oa !== ob) return oa ? -1 : 1;
+    if (oa && ob && qa !== qb) return qb - qa;
     return (order.get(a.id) || 0) - (order.get(b.id) || 0);
   });
 }
@@ -44,7 +46,9 @@ let state = {
   showLevelComplete: false, levelBonusPts: 0,
   showSettings: false, soundOn: true, showLegendSelect: false, legendBalloons: [],
   showLegendPayConfirm: false, legendPayBalloonId: null,
-  showAbandonConfirm: false, showSharePreview: false, showTutorial: false, tutorialStep: 0,
+  legendSelectScrollY: 0,
+  _legendSelectDrag: null,
+  showAbandonConfirm: false, showResetChallengeConfirm: false, showSharePreview: false, showTutorial: false, tutorialStep: 0,
   showPrivacy: false, showAdRestartModal: false, adRestartModalContent: '',
   failHelpOpen: false,
   showRestartDoneToast: false, restartDoneToastRemain: 0, toastTimer: null,
@@ -143,7 +147,7 @@ module.exports = {
     state.balloonInLevel = 0; state.completedInLevel = 0; state.completedBalloonsList = [];
     state.failCount = 0; state.showLevelComplete = false; state.showSettings = false;
     state.showLegendSelect = false; state.showTutorial = false;
-    state.showAbandonConfirm = false; state.showSharePreview = false;
+    state.showAbandonConfirm = false; state.showResetChallengeConfirm = false; state.showSharePreview = false;
     state.showAdRestartModal = false;
     state.pumpDisabled = false;
     state.showPumpTip = false;
@@ -168,14 +172,20 @@ module.exports = {
 
   _refreshFlags() {
     return {
-      disabledHold: !state.isGameActive || state.gameState === 'success' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showSharePreview || state.showAdRestartModal,
-      maskNative: state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showSharePreview || state.showAdRestartModal
+      disabledHold: !state.isGameActive || state.gameState === 'success' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal,
+      maskNative: state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal
     };
   },
 
   // 任意会挡住「按住充气」交互的弹窗 / 提示是否在场
   _anyModalBlockingPumpTip() {
-    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || state.showPrivacy || state.failHelpOpen);
+    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || state.showPrivacy || state.failHelpOpen);
+  },
+
+  /** 是否绘制全屏黑蒙层（仅弹窗，不含会自动消失的 toast） */
+  _battleDimBackdrop() {
+    return !!(this._anyModalBlockingPumpTip()
+      || (state.gameState === 'success' && state.balloonInLevel < 9 && !state.showLevelComplete));
   },
 
   _showPumpTipFor(ms) {
@@ -208,13 +218,6 @@ module.exports = {
     const subY = navTitleY + 22;
     const subText = '🚩 第 ' + (state.currentLevelIdx + 1) + ' 关 ｜ ' + state.level.name;
     drawText(ctx, subText, W / 2, subY, 'rgba(255,255,255,0.55)', 12, 'center', undefined, 400);
-
-    // 右上角音量图标（更小的 hit area）
-    const volSize = 28;
-    const volX = W - 14 - volSize;
-    const volY = navTitleY - volSize / 2;
-    drawText(ctx, state.soundOn ? '🔊' : '🔇', volX + volSize / 2, volY + volSize / 2 + 1, '#ffffff', 18, 'center');
-    UI.manager.addTouchable(volX - 4, volY - 4, volSize + 8, volSize + 8, 'toggleSound');
 
     // ─── 「本关进度」大卡片（标题区 + 进度格） ─────────
     // 纵向均匀布局：上边距 = 标题↔卡片间距 = 下边距（3 段相等）
@@ -371,7 +374,7 @@ module.exports = {
     const hintH = state.paidBalloonUsed ? 0 : 18;
     if (!state.paidBalloonUsed) {
       drawText(ctx, '可以购买传奇气球替换第十个气球', W / 2,
-        belowY + 6, 'rgba(255,215,0,0.78)', 12, 'center');
+        belowY + 6, 'rgba(255,255,255,0.7)', 12, 'center');
       UI.manager.addTouchable(W / 2 - 110, belowY - 4, 220, 22, 'openLegendSelect');
       belowY += hintH + 6;
     }
@@ -429,6 +432,7 @@ module.exports = {
     }
 
     // ─── Modals ─────────────────────────────────
+    if (this._battleDimBackdrop()) drawModalBackground(ctx, W, H);
     if (state.showTutorial) this._drawTutorialModal(ctx, W, H);
     if (state.gameState === 'fail') this._drawFailModal(ctx, W, H);
     if (state.showLevelComplete) this._drawLevelCompleteModal(ctx, W, H);
@@ -440,6 +444,7 @@ module.exports = {
     if (state.showRestartDoneToast) this._drawRestartToast(ctx, W, H);
     if (state.showAdRestartModal) this._drawAdRestartModal(ctx, W, H);
     if (state.showAbandonConfirm) this._drawAbandonConfirm(ctx, W, H);
+    if (state.showResetChallengeConfirm) this._drawResetChallengeConfirm(ctx, W, H);
     if (state.showPrivacy) this._drawPrivacyModal(ctx, W, H);
     if (state.gameState === 'success' && state.balloonInLevel < 9 && !state.showLevelComplete) {
       this._drawSuccessModal(ctx, W, H);
@@ -463,6 +468,32 @@ module.exports = {
 
   // ─── Touch handling ────────────────────────
   onTouch(type, x, y) {
+    const Wm = this.manager.width;
+    const Hm = this.manager.height;
+
+    // 选择传奇气球：列表区域上下滑动（拖动反向滚动，符合移动端直觉）
+    if (state.showLegendSelect && !state.showLegendPayConfirm) {
+      const L = this._getLegendSelectLayout(Wm, Hm);
+      if (L && L.scrollMax > 0) {
+        if (type === 'start' || type === 'begin') {
+          if (x >= L.mx && x <= L.mx + L.mw && y >= L.gridY && y <= L.gridY + L.viewportH) {
+            state._legendSelectDrag = { y0: y, scroll0: state.legendSelectScrollY };
+            return true;
+          }
+        } else if (type === 'move' && state._legendSelectDrag) {
+          let ns = state._legendSelectDrag.scroll0 - (y - state._legendSelectDrag.y0);
+          if (ns < 0) ns = 0;
+          if (ns > L.scrollMax) ns = L.scrollMax;
+          state.legendSelectScrollY = ns;
+          return true;
+        } else if (type === 'end' || type === 'tap') {
+          state._legendSelectDrag = null;
+        }
+      } else if (type === 'end' || type === 'tap') {
+        state._legendSelectDrag = null;
+      }
+    }
+
     // 弹窗打开：屏蔽 start/begin（保留 tap/end 让按钮能命中），并清除提示
     const blocked = this._anyModalBlockingPumpTip();
     if (blocked) {
@@ -758,9 +789,9 @@ module.exports = {
       ctx.fillStyle = 'rgba(244,114,182,0.06)'; ctx.fill();
       ctx.strokeStyle = 'rgba(244,114,182,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
-      const secondText = isAdOnly ? '看广告重置关卡' : '重置本关，从第1只开始（消耗1次）';
+      const secondText = isAdOnly ? '重置挑战（从第 1 关开始）' : ('重置本关，从第1只开始（剩余 ' + state.restartChances + ' 次）');
       drawText(ctx, secondText, W / 2, sy + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
-      this.manager.addTouchable(btnX, sy, btnW, btnH, isAdOnly ? 'watchAdRetry' : 'restartFromFail');
+      this.manager.addTouchable(btnX, sy, btnW, btnH, isAdOnly ? 'openResetChallengeConfirm' : 'restartFromFail');
     }
 
     // 取消（次级文字按钮）
@@ -796,9 +827,9 @@ module.exports = {
     drawWrappedText(ctx, '看广告再试一次：不消耗重开次数，仅重打当前气球；', mx + px, line1Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
     const line2Y = line1Y + lineGap * 2;
     if (!isAdOnly) {
-      drawWrappedText(ctx, '重置本关：消耗 1 次重开机会，从本关第 1 只气球重新开始。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
+      drawWrappedText(ctx, '重置本关：每次消耗 1 次重开机会，从本关第 1 只气球重新开始；当前剩余 ' + state.restartChances + ' 次。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
     } else {
-      drawWrappedText(ctx, '看广告重置关卡：重新开始本关卡。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
+      drawWrappedText(ctx, '重置挑战：重开机会已用完时可用，将清除挑战进度，从第 1 关重新开始。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
     }
     const btn = drawButtonGradient(ctx, mx + px, my + ph - py - btnH, pw - px * 2, btnH, '知道了', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 14, undefined, 600);
     this.manager.addTouchable(btn.x, btn.y, btn.w, btn.h, 'closeFailHelp');
@@ -966,9 +997,14 @@ module.exports = {
   _drawSettingsModal(ctx, W, H) {
     const mw = W - 80, mx = 40;
     const py = 22, px = 20;
-    const titleH = 22, gap = 10, rowH = 44, actionH = 44, footerH = 28;
+    const titleH = 22, gap = 10, rowH = 40, actionH = 44, footerH = 28;
     const settings = store.getSettings();
-    const mh = py + titleH + gap + rowH * 3 + gap + actionH * 3 + gap * 2 + footerH + py;
+    const toggleTrackH = 24;
+    const actions = [
+      { text: '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
+    ];
+    const actionsBlockH = actions.length * actionH + (actions.length - 1) * gap;
+    const mh = py + titleH + gap + rowH * 3 + gap + actionsBlockH + footerH + py;
     const my = (H - mh) / 2;
 
     ctx.save();
@@ -987,22 +1023,17 @@ module.exports = {
     toggles.forEach((t, i) => {
       const ry = my + py + titleH + gap + i * rowH;
       drawText(ctx, t.label, mx + px, ry + rowH / 2, 'rgba(255,255,255,0.85)', 14, 'left', undefined, 500);
-      this._drawToggle(ctx, mx + mw - px - 72, ry + (rowH - 36) / 2, !!settings[t.key], t.handler);
+      this._drawToggle(ctx, mx + mw - px - 44, ry + (rowH - toggleTrackH) / 2, !!settings[t.key], t.handler);
     });
 
     const actionsY = my + py + titleH + gap + rowH * 3 + gap;
-    const actions = [
-      { text: '重置本关，从第1只开始（消耗1次）', style: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.85)', h: 'resetLevel' },
-      { text: '看广告获得 2 次重开机会', style: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.85)', h: 'watchAdGetRetries' },
-      { text: '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
-    ];
     actions.forEach((a, i) => {
       const ay = actionsY + i * (actionH + gap);
       const btn = drawButtonGradient(ctx, mx + px, ay, mw - px * 2, actionH, a.text, a.style, a.color, 14, 12, undefined, 500);
       this.manager.addTouchable(btn.x, btn.y, btn.w, btn.h, a.h);
     });
 
-    const footerY = actionsY + actions.length * (actionH + gap);
+    const footerY = actionsY + actionsBlockH + gap;
     drawText(ctx, '儿童隐私保护声明及监护人须知', W / 2, footerY + footerH / 2, 'rgba(255,255,255,0.5)', 12, 'center', undefined, 400);
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 0.5;
@@ -1210,18 +1241,37 @@ module.exports = {
   openSharePreview() { showToast('分享功能已就绪'); },
 
   // ─── Legend Select Modal ──
-  _drawLegendSelect(ctx, W, H) {
+  /** 与绘制、触摸滚动共用：列表可视高度、滚动上限、格子尺寸等 */
+  _getLegendSelectLayout(W, H) {
     const mw = W - 80, mx = 40;
     const py = 22, px = 20;
     const titleH = 22, btnH = 44;
     const gridMaxH = H * 0.55;
     const legends = _paidBalloonTypesOrdered();
-    const owned = store.getOwnedBalloonList();
     const cols = 2, cellH = 90, cellGap = 8;
     const rows = Math.ceil(legends.length / cols);
-    const gridH = Math.min(rows * cellH + (rows - 1) * cellGap, gridMaxH) + 10;
-    const mh = py + titleH + 6 + gridH + 10 + btnH + py;
+    const rawGrid = rows * cellH + (rows - 1) * cellGap;
+    const viewportH = Math.min(rawGrid, gridMaxH) + 10;
+    const contentH = 4 + rawGrid + 4;
+    const scrollMax = Math.max(0, contentH - viewportH);
+    const mh = py + titleH + 6 + viewportH + 10 + btnH + py;
     const my = Math.max(20, (H - mh) / 2);
+    const gridY = my + py + titleH + 6;
+    const cellW = (mw - px * 2 - cellGap) / cols;
+    return {
+      mx, my, mw, mh, px, py, titleH, btnH, gridY, viewportH, contentH, scrollMax,
+      cols, rows, cellW, cellH, cellGap, legends
+    };
+  },
+
+  _drawLegendSelect(ctx, W, H) {
+    const L = this._getLegendSelectLayout(W, H);
+    const { mx, my, mw, mh, px, py, titleH, btnH, gridY, viewportH, scrollMax, cellW, cellH, cellGap, cols, legends } = L;
+    const owned = store.getOwnedBalloonList();
+    let scrollY = state.legendSelectScrollY;
+    if (scrollY < 0) scrollY = 0;
+    if (scrollY > scrollMax) scrollY = scrollMax;
+    state.legendSelectScrollY = scrollY;
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.4)');
@@ -1231,12 +1281,11 @@ module.exports = {
 
     drawText(ctx, '选择传奇气球', W / 2, my + py + titleH / 2, '#ffd700', 18, 'center', 'rgba(255,215,0,0.7)', 700);
 
-    const gridY = my + py + titleH + 6;
-    const cellW = (mw - px * 2 - cellGap) / cols;
-    beginScrollView(ctx, mx, gridY, mw, gridH, 0);
+    beginScrollView(ctx, mx, gridY, mw, viewportH, scrollY);
     legends.forEach((l, i) => {
       const col = i % cols, row = Math.floor(i / cols);
-      const gx = mx + px + col * (cellW + cellGap), gy = gridY + 4 + row * (cellH + cellGap);
+      const gx = mx + px + col * (cellW + cellGap);
+      const gy = gridY + 4 + row * (cellH + cellGap);
       const own = owned.find(o => o.id === l.id), hasIt = own && own.quantity > 0;
       ctx.save();
       roundRect(ctx, gx, gy, cellW, cellH, 12);
@@ -1251,10 +1300,30 @@ module.exports = {
       drawText(ctx, hasIt ? '已拥有 ' + own.quantity : '未拥有', gx + cellW / 2, gy + 76, hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)', 12, 'center');
       ctx.restore();
       if (!state.showLegendPayConfirm) {
-        this.manager.addTouchable(gx, gy, cellW, cellH, 'onLegendCellTap', l.id);
+        const hitTop = gy - scrollY;
+        const hitBottom = hitTop + cellH;
+        if (hitBottom > gridY && hitTop < gridY + viewportH) {
+          this.manager.addTouchable(gx, hitTop, cellW, cellH, 'onLegendCellTap', l.id);
+        }
       }
     });
     endScrollView(ctx);
+
+    // 滚动条指示（仅当列表超出可视区时）
+    if (scrollMax > 0) {
+      const trackW = 3;
+      const trackX = mx + mw - 8;
+      const trackY = gridY + 6;
+      const trackH = viewportH - 12;
+      const barH = Math.max(24, trackH * (viewportH / L.contentH));
+      const barY = trackY + (scrollY / scrollMax) * (trackH - barH);
+      ctx.save();
+      roundRect(ctx, trackX, trackY, trackW, trackH, trackW / 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
+      roundRect(ctx, trackX, barY, trackW, barH, trackW / 2);
+      ctx.fillStyle = 'rgba(255,215,0,0.55)'; ctx.fill();
+      ctx.restore();
+    }
 
     const cb = drawButtonGradient(ctx, mx + px, my + mh - py - btnH, mw - px * 2, btnH, '关闭', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
     if (!state.showLegendPayConfirm) {
@@ -1311,6 +1380,7 @@ module.exports = {
     }
     state.legendPayBalloonId = bId;
     state.showLegendPayConfirm = true;
+    state._legendSelectDrag = null;
   },
 
   _equipLegendFromModal(bId) {
@@ -1327,6 +1397,7 @@ module.exports = {
   cancelLegendPay() {
     state.showLegendPayConfirm = false;
     state.legendPayBalloonId = null;
+    state._legendSelectDrag = null;
   },
 
   confirmLegendPay() {
@@ -1356,6 +1427,48 @@ module.exports = {
     state.showLegendSelect = false;
   },
 
+  // ─── Reset Challenge Confirm ──
+  _drawResetChallengeConfirm(ctx, W, H) {
+    const mw = W - 80, mx = 40;
+    const py = 22, px = 20;
+    const titleH = 22, gap = 12, descH = 60, btnH = 48;
+    const mh = py + titleH + gap + descH + gap + btnH + py;
+    const my = (H - mh) / 2;
+
+    this.manager.addTouchable(0, 0, W, H, () => {});
+
+    ctx.save();
+    this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)');
+    drawText(ctx, '确认重置挑战？', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
+    drawWrappedText(ctx, '将重置挑战进度，从第 1 关开始挑战，确定重置挑战吗？', mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
+    const btnY = my + py + titleH + gap + descH + gap;
+    const halfW = (mw - px * 3) / 2;
+    const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
+    this.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'cancelResetChallenge');
+    const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, '确认重置', 'rgba(255,23,68,0.2)', '#ff1744', 14, 12, undefined, 700);
+    this.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmResetChallenge');
+    ctx.restore();
+  },
+  openResetChallengeConfirm() {
+    state.failHelpOpen = false;
+    state.showResetChallengeConfirm = true;
+  },
+  cancelResetChallenge() {
+    state.showResetChallengeConfirm = false;
+  },
+  confirmResetChallenge() {
+    store.resetChallengeProgress();
+    state.showResetChallengeConfirm = false;
+    state.gameState = 'idle';
+    state.pumpDisabled = false;
+    state.isExploding = false;
+    state.flashWhite = false;
+    state.failHelpOpen = false;
+    resetParticles();
+    this._initLevel();
+    showToast('挑战已重置，从第 1 关开始');
+  },
+
   // ─── Abandon Confirm ──────
   _drawAbandonConfirm(ctx, W, H) {
     const mw = W - 80, mx = 40;
@@ -1376,12 +1489,34 @@ module.exports = {
     this.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmAbandon');
     ctx.restore();
   },
+  // 精致开关：轨道 44×24（圆角 12），滑钮 18×18（半径 9），左右内边距 3px
   _drawToggle(ctx, x, y, on, handler) {
-    const tw = 72, th = 36;
-    ctx.save(); roundRect(ctx, x, y, tw, th, 18);
-    ctx.fillStyle = on ? '#86efac' : 'rgba(255,255,255,0.15)'; ctx.fill(); ctx.restore();
-    ctx.save(); ctx.beginPath(); ctx.arc(on ? x + tw - 18 : x + 18, y + 18, 14, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
-    this.manager.addTouchable(x, y, tw, th, handler);
+    const tw = 44, th = 24;
+    const inset = 3;
+    const knobR = (th - inset * 2) / 2;
+    ctx.save();
+    roundRect(ctx, x, y, tw, th, th / 2);
+    ctx.fillStyle = on ? '#86efac' : 'rgba(255,255,255,0.18)';
+    ctx.fill();
+    ctx.strokeStyle = on ? 'rgba(134,239,172,0.5)' : 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+
+    const knobCx = on ? x + tw - inset - knobR : x + inset + knobR;
+    const knobCy = y + th / 2;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 3;
+    ctx.shadowOffsetY = 1;
+    ctx.beginPath();
+    ctx.arc(knobCx, knobCy, knobR, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.restore();
+
+    const hitPad = 8;
+    this.manager.addTouchable(x - hitPad, y - hitPad, tw + hitPad * 2, th + hitPad * 2, handler);
   },
   closeSettings() { state.showSettings = false; },
   toggleSound() {
@@ -1417,12 +1552,16 @@ module.exports = {
     state.legendBalloons = BALLOON_TYPES.filter(b => b.isPaid).map(l => { const o = wearables.find(w => w.id === l.id); return { ...l, owned: !!o, quantity: o ? o.quantity : 0 }; });
     state.showLegendPayConfirm = false;
     state.legendPayBalloonId = null;
+    state.legendSelectScrollY = 0;
+    state._legendSelectDrag = null;
     state.showLegendSelect = true;
   },
   closeLegendSelect() {
     state.showLegendSelect = false;
     state.showLegendPayConfirm = false;
     state.legendPayBalloonId = null;
+    state.legendSelectScrollY = 0;
+    state._legendSelectDrag = null;
   },
 
   // ─── Ad Restart Modal ────────────

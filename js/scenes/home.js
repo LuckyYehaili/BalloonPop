@@ -2,7 +2,7 @@
 const { 
   drawBackground, drawText, drawButton, drawButtonGradient, drawImage, drawWrappedText, 
   gradientPink, gradientGold, showModal, showToast, roundRect, measureText, 
-  beginScrollView, endScrollView, loadImages, getImage
+  beginScrollView, endScrollView, loadImages, getImage, drawModalBackground
 } = require('../engine/canvas-ui');
 const store = require('../store');
 const { BALLOON_TYPES } = require('../balloons');
@@ -657,6 +657,7 @@ module.exports = {
 
     // 8. 通知弹窗（尺寸与字号随屏宽收敛，避免占满屏、字过大）
     if (state.showNotification) {
+      drawModalBackground(ctx, W, H);
       const pad = 18;                       // 内边距
       const side = 40;                      // 弹窗距屏幕左右（与全局一致）
       const mw = W - side * 2;              // 弹窗宽度 W-80

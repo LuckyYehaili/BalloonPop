@@ -1,7 +1,7 @@
 // 战队统一页：我的战队 / 战队排名 / 战队推荐（Canvas，与首页视觉一致）
 const {
   drawBackground, drawText, drawButtonGradient, drawImage, showToast, roundRect,
-  gradientPink, measureText, loadImages, getImage
+  gradientPink, measureText, loadImages, getImage, drawModalBackground
 } = require('../engine/canvas-ui');
 const store = require('../store');
 const UX = require('../ui-theme');
@@ -993,9 +993,7 @@ module.exports = {
 
   // ─── 创建战队：弹窗 ───────────────────────────────
   _renderCreateModal(ctx, W, H, scene) {
-    // 全屏遮罩（更深，确保看不到底层内容）
-    ctx.fillStyle = 'rgba(4,2,18,0.92)';
-    ctx.fillRect(0, 0, W, H);
+    drawModalBackground(ctx, W, H);
     // 1) 全屏背景：点击空白处关闭弹窗
     scene.manager.addTouchable(0, 0, W, H, 'cancelCreateModal');
 
@@ -1078,8 +1076,7 @@ module.exports = {
 
   // ─── 创建成功后：邀请/开始引导弹窗 ───
   _renderSuccessModal(ctx, W, H, scene) {
-    ctx.fillStyle = 'rgba(6,4,24,0.78)';
-    ctx.fillRect(0, 0, W, H);
+    drawModalBackground(ctx, W, H);
     // 全屏吸收点击（不关闭，避免误触）
     scene.manager.addTouchable(0, 0, W, H, () => {});
 
@@ -1128,9 +1125,7 @@ module.exports = {
 
   // ─── 退出战队确认弹窗 ───────────────────────────────────────
   _renderLeaveModal(ctx, W, H, scene) {
-    // 半透明遮罩
-    ctx.fillStyle = 'rgba(4,2,18,0.88)';
-    ctx.fillRect(0, 0, W, H);
+    drawModalBackground(ctx, W, H);
     scene.manager.addTouchable(0, 0, W, H, () => { state.showLeaveModal = false; });
 
     const cardW = W - 80;
@@ -1205,9 +1200,7 @@ module.exports = {
 
   // ─── 加入战队二次确认弹窗 ───────────────────────────────────
   _renderJoinModal(ctx, W, H, scene) {
-    // 半透明遮罩
-    ctx.fillStyle = 'rgba(4,2,18,0.88)';
-    ctx.fillRect(0, 0, W, H);
+    drawModalBackground(ctx, W, H);
     scene.manager.addTouchable(0, 0, W, H, 'cancelJoinModal');
 
     const cardW = W - 80;
@@ -1317,8 +1310,7 @@ module.exports = {
 
   // ─── 战队榜规则说明弹窗 ───────────────────────────────────
   _renderRulesModal(ctx, W, H, scene) {
-    ctx.fillStyle = 'rgba(4,2,18,0.88)';
-    ctx.fillRect(0, 0, W, H);
+    drawModalBackground(ctx, W, H);
     scene.manager.addTouchable(0, 0, W, H, 'closeRulesModal');
 
     const cardW = W - 80;

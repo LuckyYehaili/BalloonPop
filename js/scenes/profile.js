@@ -1,5 +1,5 @@
 // Profile Scene (PRD 5.x)
-const { drawBackground, drawText, drawButtonGradient, drawImage, showToast, gradientPink, gradientGold, roundRect, beginScrollView, endScrollView, drawWrappedText } = require('../engine/canvas-ui');
+const { drawBackground, drawText, drawButtonGradient, drawImage, showToast, gradientPink, gradientGold, roundRect, beginScrollView, endScrollView, drawWrappedText, drawModalBackground } = require('../engine/canvas-ui');
 const store = require('../store');
 const { BALLOON_TYPES, LEVELS } = require('../balloons');
 const UX = require('../ui-theme');
@@ -91,6 +91,9 @@ module.exports = {
     drawText(ctx, '关于我们', 28, yy+110, 'rgba(255,255,255,0.75)', 18); scene.manager.addTouchable(16,yy+90,W-32,40,'openAbout');
 
     // Modals
+    if (state.showHistory || state.showAssets || state.showDeletion || state.showAbout) {
+      drawModalBackground(ctx, W, H);
+    }
     if (state.showHistory) this._drawHistoryModal(ctx, W, H);
     if (state.showAssets) this._drawAssetsModal(ctx, W, H);
     if (state.showDeletion) this._drawDeletionModal(ctx, W, H);

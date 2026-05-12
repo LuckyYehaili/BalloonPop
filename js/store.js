@@ -197,6 +197,18 @@ function resetInLevelProgress() { const d=_load(); d.progress.completedBalloons=
 /** 冷启动：进程重启后清空进行中的关卡进度（PRD 7.1 / 3.3.2） */
 function applyColdStart() { resetInLevelProgress(); }
 
+/** 重置整个挑战进度：解锁关卡仅留第 1 关、当前回到第 1 关、清空局内进度、重置重开次数与装备的传奇气球。
+ *  保留：已拥有的气球库存、账号、战队、流水等。 */
+function resetChallengeProgress() {
+  const d = _load();
+  d.unlockedLevels = [1];
+  d.lastPlayedLevel = 1;
+  d.progress = { currentLevel: 1, completedBalloons: 0, balloonIndex: 0 };
+  d.freeRetries = { level1: 3, level2: 3, level3: 3, level4: 3 };
+  d.equippedLegend = { level1: null, level2: null, level3: null, level4: null };
+  _save();
+}
+
 function getFreeRetries(lv) { const d=_load(); const k='level'+lv; return d.freeRetries[k]||0; }
 function useFreeRetry(lv) { const d=_load(); const k='level'+lv; if((d.freeRetries[k]||0)<=0)return false; d.freeRetries[k]--; _save(); return true; }
 function addFreeRetries(lv,count,maxTotal) { const d=_load(); const k='level'+lv; const cur=d.freeRetries[k]||0; d.freeRetries[k]=Math.min(cur+count,maxTotal||5); _save(); return d.freeRetries[k]; }
@@ -255,7 +267,7 @@ module.exports = {
   getOwnedBalloons, getOwnedBalloonList, addBalloon, removeBalloon, hasBalloon, getBalloonQuantity,
   getEquippedLegend, equipLegend, unequipLegend,
   getUnlockedLevels, unlockLevel, isLevelUnlocked, getLastPlayedLevel, setLastPlayedLevel,
-  getProgress, setProgress, resetInLevelProgress, applyColdStart,
+  getProgress, setProgress, resetInLevelProgress, applyColdStart, resetChallengeProgress,
   getFreeRetries, useFreeRetry, addFreeRetries,
   canRecordFullClear, recordFullClear, checkViolation, isBanned,
   addClearRecord, getClearHistory,

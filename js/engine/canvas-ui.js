@@ -212,9 +212,17 @@ function closeModal() { _modalStack.pop(); }
 function closeAllModals() { _modalStack = []; }
 function getModalStack() { return _modalStack; }
 
-function drawModalBackground(ctx, W, H) {
-  ctx.fillStyle = 'rgba(6,10,18,0.86)';
+/** 全屏蒙层：黑色 85% 不透明（弹窗底层，无模糊） */
+function drawModalDimOverlay(ctx, W, H) {
+  if (!ctx) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
   ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+function drawModalBackground(ctx, W, H) {
+  drawModalDimOverlay(ctx, W, H);
 }
 
 function drawModal(ctx, modal, touchables) {
@@ -438,7 +446,7 @@ module.exports = {
   roundRect, drawButton, drawButtonGradient, drawIconButton,
   gradientPink, gradientGold, gradientGreen,
   showModal, closeModal, closeAllModals, getModalStack,
-  drawModalBackground, drawModal,
+  drawModalDimOverlay, drawModalBackground, drawModal,
   showToast, drawToast,
   loadImages, getImage, drawImage,
   drawBackground, LEVEL_BG,
