@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'balloon_hot_v2';
+const { BALLOON_TYPES } = require('./balloons');
 
 const MOCK_TEAM_NAMES = [
   '糖果冲锋队', '霓虹突击者', '熔岩霸主', '神殿守卫者',
@@ -76,6 +77,14 @@ function _load() {
       if (!data.freeRetries) data.freeRetries = def.freeRetries;
       if (!data.settings) data.settings = def.settings;
       if (!data.ownedBalloons) data.ownedBalloons = {};
+      for (const id of Object.keys(data.ownedBalloons)) {
+        const e = data.ownedBalloons[id];
+        if (!e) continue;
+        if (e.frozenQuantity === undefined) e.frozenQuantity = e.frozen ? Math.min(1, e.quantity || 0) : 0;
+        if (!Array.isArray(e.frozenGiftIds)) e.frozenGiftIds = e.frozenGiftId ? [e.frozenGiftId] : [];
+        e.frozen = (e.frozenQuantity || 0) > 0;
+        e.frozenGiftId = e.frozenGiftIds[0] || null;
+      }
       if (!data.equippedLegend) data.equippedLegend = def.equippedLegend;
       if (!data.user) data.user = def.user;
       _cache = data;
@@ -166,7 +175,7 @@ function _regenerateMockData(data) {
 function _addBalloonRaw(data, balloonId, quantity, source) {
   if (!data.ownedBalloons) data.ownedBalloons = {};
   if (!data.ownedBalloons[balloonId]) {
-    data.ownedBalloons[balloonId] = { quantity: 0, source: source||'purchase', acquiredAt: _timestamp(), giftable: source==='purchase', wearable: true, craftable: true, frozen: false, frozenGiftId: null };
+    data.ownedBalloons[balloonId] = { quantity: 0, source: source||'purchase', acquiredAt: _timestamp(), giftable: source==='purchase', wearable: true, craftable: true, frozen: false, frozenGiftId: null, frozenQuantity: 0, frozenGiftIds: [] };
   }
   data.ownedBalloons[balloonId].quantity += quantity;
   data.ownedBalloons[balloonId].acquiredAt = _timestamp();
@@ -174,15 +183,25 @@ function _addBalloonRaw(data, balloonId, quantity, source) {
   return data.ownedBalloons[balloonId];
 }
 
+function _frozenQty(e) { return e ? Math.max(0, e.frozenQuantity || (e.frozen ? 1 : 0)) : 0; }
+function _availableQty(e) { return e ? Math.max(0, (e.quantity || 0) - _frozenQty(e)) : 0; }
+function _syncFrozenFields(e) {
+  if (!e) return;
+  if (!Array.isArray(e.frozenGiftIds)) e.frozenGiftIds = e.frozenGiftId ? [e.frozenGiftId] : [];
+  e.frozenQuantity = Math.min(e.quantity || 0, _frozenQty(e));
+  e.frozen = e.frozenQuantity > 0;
+  e.frozenGiftId = e.frozenGiftIds[0] || null;
+}
+
 function getOwnedBalloons() { return _deepClone(_get('ownedBalloons')||{}); }
 function getOwnedBalloonList() { const d=_load(); const m=d.ownedBalloons||{}; return Object.keys(m).map(id=>({id,...m[id]})); }
 function addBalloon(bId,qty,src) { const d=_load(); _addBalloonRaw(d,bId,qty,src); _save(); }
-function removeBalloon(bId,qty) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||e.quantity<qty)return false; e.quantity-=qty; if(e.quantity<=0){delete d.ownedBalloons[bId];for(const k in d.equippedLegend){if(d.equippedLegend[k]===bId)d.equippedLegend[k]=null;}}_save();return true; }
+function removeBalloon(bId,qty) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||_availableQty(e)<qty)return false; e.quantity-=qty; _syncFrozenFields(e); if(e.quantity<=0){delete d.ownedBalloons[bId];for(const k in d.equippedLegend){if(d.equippedLegend[k]===bId)d.equippedLegend[k]=null;}} else if(_availableQty(e)<=0){for(const k in d.equippedLegend){if(d.equippedLegend[k]===bId)d.equippedLegend[k]=null;}}_save();return true; }
 function hasBalloon(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e&&e.quantity>0; }
 function getBalloonQuantity(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e?e.quantity:0; }
 
 function getEquippedLegend(levelIndex) { const k='level'+(levelIndex+1); const d=_load(); return d.equippedLegend[k]||null; }
-function equipLegend(levelIndex,bId) { const d=_load(); const k='level'+(levelIndex+1); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||e.quantity<1)return false; d.equippedLegend[k]=bId; _save(); return true; }
+function equipLegend(levelIndex,bId) { const d=_load(); const k='level'+(levelIndex+1); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||_availableQty(e)<1)return false; d.equippedLegend[k]=bId; _save(); return true; }
 function unequipLegend(levelIndex) { const d=_load(); const k='level'+(levelIndex+1); d.equippedLegend[k]=null; _save(); }
 
 function getUnlockedLevels() { return _deepClone(_get('unlockedLevels')||[1]); }
@@ -209,6 +228,27 @@ function resetChallengeProgress() {
   _save();
 }
 
+/** 根据已拥有的普通气球，恢复其对应章节解锁（不修改库存）。 */
+function reunlockLevelsFromOwnedCommonBalloons() {
+  const d = _load();
+  const owned = d.ownedBalloons || {};
+  const u = new Set(d.unlockedLevels && d.unlockedLevels.length ? d.unlockedLevels : [1]);
+  for (const id of Object.keys(owned)) {
+    const e = owned[id];
+    if (!e || e.quantity <= 0) continue;
+    const b = BALLOON_TYPES.find(t => t.id === id && !t.isPaid);
+    if (b && typeof b.level === 'number') u.add(b.level);
+  }
+  d.unlockedLevels = Array.from(u).sort((a, b) => a - b);
+  _save();
+}
+
+/** 放弃挑战：重置闯关关卡数据（同 resetChallengeProgress），已获得的普通气球不删，其对应关卡保持解锁。 */
+function abandonChallengeResetProgress() {
+  resetChallengeProgress();
+  reunlockLevelsFromOwnedCommonBalloons();
+}
+
 function getFreeRetries(lv) { const d=_load(); const k='level'+lv; return d.freeRetries[k]||0; }
 function useFreeRetry(lv) { const d=_load(); const k='level'+lv; if((d.freeRetries[k]||0)<=0)return false; d.freeRetries[k]--; _save(); return true; }
 function addFreeRetries(lv,count,maxTotal) { const d=_load(); const k='level'+lv; const cur=d.freeRetries[k]||0; d.freeRetries[k]=Math.min(cur+count,maxTotal||5); _save(); return d.freeRetries[k]; }
@@ -229,12 +269,13 @@ function toggleBouquetStar(sn) { const d=_load(); const bq=(d.bouquetCollection|
 function addTransaction(tx) { const d=_load(); if(!d.transactions)d.transactions=[]; d.transactions.unshift({...tx,time:_timestamp()}); const c=_now()-30*86400000; d.transactions=d.transactions.filter(t=>new Date(t.time).getTime()>=c); if(d.transactions.length>200)d.transactions=d.transactions.slice(0,200); _save(); }
 function getTransactions(filter) { const d=_load(); let list=d.transactions||[]; if(filter&&filter.type)list=list.filter(t=>t.type===filter.type); return _deepClone(list); }
 
-function createGift(balloonIds,toOpenid,note) { const d=_load(); if(balloonIds.length>10)return{ok:false,reason:'批量赠送最多10个'}; if((d.dailyCounters.giftSendCount||0)>=20)return{ok:false,reason:'今日赠送已达上限(20个)'}; for(const bid of balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(!e||e.quantity<1)return{ok:false,reason:'气球不足:'+bid};if(!e.giftable)return{ok:false,reason:'该气球不可转赠:'+bid};if(e.frozen)return{ok:false,reason:'该气球赠送中:'+bid};} const giftId='gift_'+_now()+'_'+Math.random().toString(36).slice(2,8); for(const bid of balloonIds){d.ownedBalloons[bid].frozen=true;d.ownedBalloons[bid].frozenGiftId=giftId;} if(!d.pendingGifts)d.pendingGifts=[]; d.pendingGifts.push({giftId,balloonIds,from:d.user.openid,fromName:d.user.nickName,to:toOpenid||null,note:note||'送你专属气球',createdAt:_now(),expiresAt:_now()+24*3600000,status:'pending'}); d.dailyCounters.giftSendCount=(d.dailyCounters.giftSendCount||0)+balloonIds.length; _save(); return{ok:true,giftId}; }
+function createGift(balloonIds,toOpenid,note) { const d=_load(); if(balloonIds.length>10)return{ok:false,reason:'批量赠送最多10个'}; if((d.dailyCounters.giftSendCount||0)>=20)return{ok:false,reason:'今日赠送已达上限(20个)'}; for(const bid of balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(!e||_availableQty(e)<1)return{ok:false,reason:'可赠送气球不足:'+bid};if(!e.giftable)return{ok:false,reason:'该气球不可转赠:'+bid};} const giftId='gift_'+_now()+'_'+Math.random().toString(36).slice(2,8); for(const bid of balloonIds){const e=d.ownedBalloons[bid];if(!Array.isArray(e.frozenGiftIds))e.frozenGiftIds=[];e.frozenQuantity=_frozenQty(e)+1;e.frozenGiftIds.push(giftId);_syncFrozenFields(e);} if(!d.pendingGifts)d.pendingGifts=[]; d.pendingGifts.push({giftId,balloonIds,from:d.user.openid,fromName:d.user.nickName,to:toOpenid||null,note:note||'送你专属气球',createdAt:_now(),expiresAt:_now()+24*3600000,status:'pending'}); d.dailyCounters.giftSendCount=(d.dailyCounters.giftSendCount||0)+balloonIds.length; _save(); return{ok:true,giftId}; }
 
-function claimGift(giftId) { const d=_load(); const g=(d.pendingGifts||[]).find(g=>g.giftId===giftId); if(!g)return{ok:false,reason:'赠送链接不存在'}; if(g.status!=='pending')return{ok:false,reason:'链接已失效'}; if(_now()>g.expiresAt){g.status='expired';_unfreezeGiftBalloons(d,g);_save();return{ok:false,reason:'链接已过期'};} if((d.dailyCounters.giftReceiveCount||0)>=20)return{ok:false,reason:'今日接收已达上限(20个)'}; for(const bid of g.balloonIds){_addBalloonRaw(d,bid,1,'gift_received');d.ownedBalloons[bid].giftable=false;} g.status='claimed'; d.dailyCounters.giftReceiveCount=(d.dailyCounters.giftReceiveCount||0)+g.balloonIds.length; _save(); return{ok:true,balloonIds:g.balloonIds}; }
+function claimGift(giftId) { const d=_load(); const g=(d.pendingGifts||[]).find(g=>g.giftId===giftId); if(!g)return{ok:false,reason:'赠送链接不存在'}; if(g.status!=='pending')return{ok:false,reason:'链接已失效'}; if(_now()>g.expiresAt){g.status='expired';_unfreezeGiftBalloons(d,g);_save();return{ok:false,reason:'链接已过期'};} if((d.dailyCounters.giftReceiveCount||0)>=20)return{ok:false,reason:'今日接收已达上限(20个)'}; _consumeGiftBalloons(d,g); for(const bid of g.balloonIds){_addBalloonRaw(d,bid,1,'gift_received');d.ownedBalloons[bid].giftable=false;} g.status='claimed'; d.dailyCounters.giftReceiveCount=(d.dailyCounters.giftReceiveCount||0)+g.balloonIds.length; _save(); return{ok:true,balloonIds:g.balloonIds}; }
 
 function expireGifts() { const d=_load(); const gs=d.pendingGifts||[]; let c=false; for(const g of gs){if(g.status==='pending'&&_now()>g.expiresAt){g.status='expired';_unfreezeGiftBalloons(d,g);c=true;}} if(c)_save(); }
-function _unfreezeGiftBalloons(d,g) { for(const bid of g.balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(e){e.frozen=false;e.frozenGiftId=null;}} }
+function _unfreezeGiftBalloons(d,g) { for(const bid of g.balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(e){e.frozenQuantity=Math.max(0,_frozenQty(e)-1);if(Array.isArray(e.frozenGiftIds))e.frozenGiftIds=e.frozenGiftIds.filter(id=>id!==g.giftId);_syncFrozenFields(e);}} }
+function _consumeGiftBalloons(d,g) { for(const bid of g.balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(e&&Array.isArray(e.frozenGiftIds)&&e.frozenGiftIds.includes(g.giftId)){e.frozenQuantity=Math.max(0,_frozenQty(e)-1);e.frozenGiftIds=e.frozenGiftIds.filter(id=>id!==g.giftId);e.quantity=Math.max(0,(e.quantity||0)-1);_syncFrozenFields(e);if(e.quantity<=0)delete d.ownedBalloons[bid];}} }
 function getPendingGifts() { return _deepClone(_get('pendingGifts')||[]); }
 
 function createTeam(name) { const d=_load(); if(d.team)return{ok:false,reason:'已加入战队'}; if((d.dailyCounters.createTeamCount||0)>=1)return{ok:false,reason:'今日创建次数已达上限'}; const tid='team_'+_now()+'_'+Math.random().toString(36).slice(2,6); d.team={id:tid,name,description:'',leaderId:d.user.openid,createdAt:_now(),memberCount:1,dailyTotalClears:0,qrCode:'',members:[{openid:d.user.openid,nickName:d.user.nickName,joinedAt:_now(),isLeader:true,dailyClears:0,showStats:true,notifyOn:d.settings.notificationOn||false}]}; d.dailyCounters.createTeamCount=(d.dailyCounters.createTeamCount||0)+1; d.lastPlayedLevel=1; _save(); return{ok:true,teamId:tid}; }
@@ -268,6 +309,7 @@ module.exports = {
   getEquippedLegend, equipLegend, unequipLegend,
   getUnlockedLevels, unlockLevel, isLevelUnlocked, getLastPlayedLevel, setLastPlayedLevel,
   getProgress, setProgress, resetInLevelProgress, applyColdStart, resetChallengeProgress,
+  reunlockLevelsFromOwnedCommonBalloons, abandonChallengeResetProgress,
   getFreeRetries, useFreeRetry, addFreeRetries,
   canRecordFullClear, recordFullClear, checkViolation, isBanned,
   addClearRecord, getClearHistory,

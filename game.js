@@ -11,11 +11,21 @@ canvas.height = H * dpr;
 
 // ─── 初始化 Store ───────────────────────────
 const store = require('./js/store');
-const { loadNumericFont, setNumericFontSourceUrl } = require('./js/engine/canvas-ui');
+const { loadNumericFont, setNumericFontSourceUrl, showToast } = require('./js/engine/canvas-ui');
 
 store.checkDailyReset();
 store.expireGifts();
 store.applyColdStart();
+
+// 全局音频策略：iOS 静音键开着也允许游戏发声，避免「玩家手机静音 → 一切音效失声」。
+// 必须在 createInnerAudioContext 之前调用一次；放在入口启动时最稳。
+if (typeof wx !== 'undefined' && typeof wx.setInnerAudioOption === 'function') {
+  try {
+    wx.setInnerAudioOption({ obeyMuteSwitch: false, mixWithOther: true });
+  } catch (e) {
+    console.warn('[game] setInnerAudioOption failed:', e && e.message);
+  }
+}
 
 // 数字字体 DIN Alternate：远程地址就绪后取消下一行注释，并在小程序后台配置 downloadFile 域名
 // setNumericFontSourceUrl('https://你的域名/fonts/DINAlternate.ttf');
@@ -50,6 +60,16 @@ function _readLaunchQuery() {
 }
 (function _initialSceneFromLaunch() {
   const q = _readLaunchQuery();
+  if (q.giftId) {
+    manager.switchTo('collection');
+    const result = store.claimGift(String(q.giftId));
+    showToast(result.ok ? '领取成功，已存入图鉴' : (result.reason || '领取失败'));
+    return;
+  }
+  if (q.scene === 'collection') {
+    manager.switchTo('collection');
+    return;
+  }
   const wantLevelComplete =
     String(q.debugLevelComplete) === '1' ||
     String(q.debugLevelComplete) === 'true' ||

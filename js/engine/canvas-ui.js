@@ -204,6 +204,43 @@ function gradientGreen(ctx, x, y, w, h) {
   return g;
 }
 
+// 全局统一开关：紫色渐变胶囊，倒角 30（即 h/2 全圆角），返回触区 {x,y,w,h}
+function drawToggle(ctx, x, y, on) {
+  const w = 50;
+  const h = 30;
+  const r = h / 2;
+  ctx.save();
+  roundRect(ctx, x, y, w, h, r);
+  if (on) {
+    const g = ctx.createLinearGradient(x, y, x + w, y + h);
+    g.addColorStop(0, '#7c4dff');
+    g.addColorStop(1, '#a855f7');
+    ctx.fillStyle = g;
+    ctx.shadowColor = 'rgba(124,77,255,0.42)';
+    ctx.shadowBlur = 12;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  const knobR = r - 3;
+  const knobCx = on ? x + w - r : x + r;
+  const knobCy = y + h / 2;
+  ctx.shadowColor = 'rgba(0,0,0,0.32)';
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetY = 1;
+  ctx.beginPath();
+  ctx.arc(knobCx, knobCy, knobR, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.restore();
+  return { x, y, w, h };
+}
+
 // ─── Modal System ───────────────────────────
 let _modalStack = [];
 
@@ -444,7 +481,7 @@ module.exports = {
   setNumericFontSourceUrl: NumFont.setNumericFontSourceUrl,
   getNumericFontFaceFamily: NumFont.getNumericFontFaceFamily,
   roundRect, drawButton, drawButtonGradient, drawIconButton,
-  gradientPink, gradientGold, gradientGreen,
+  gradientPink, gradientGold, gradientGreen, drawToggle,
   showModal, closeModal, closeAllModals, getModalStack,
   drawModalDimOverlay, drawModalBackground, drawModal,
   showToast, drawToast,

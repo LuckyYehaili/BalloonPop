@@ -25,8 +25,10 @@ let _uiImgLoaded = false;                   // 是否已触发过一次预加载
 let state = {
   userAvatar: '', userNickName: '玩家', legendTotal: 0, legendTotalAll: 0, // 个人资料 + 图鉴进度
   lastLevel: 1, highestLevel: 1, isFirstTime: true,                        // 上次/最高关卡 + 是否首次进入
+  isLoggedIn: false,                                                        // 微信授权登录态
   hasTeam: false, teamName: '', teamMemberCount: 0, teamDailyClears: 0,    // 战队信息
   topTeams: [], recentBalloons: [],                                        // 排行榜前几 + 最近获得气球
+  showLoginModal: false,                                                    // 微信授权登录弹窗
   showNotification: false, scrollY: 0, contentHeight: 0                    // 通知弹窗 + 滚动相关
 };
 
@@ -113,12 +115,12 @@ function _truncateByMeasure(ctx, text, fontSize, fontWeight, maxWidth) {
   return cut ? cut + ell : ell;
 }
 
-// 背景赛博网格：纯装饰，颜色非常淡，每 30px 画一格
+// 背景赛博网格：60×60px、极淡粉色（3% 透明度）
 function _drawCyberGrid(ctx, W, H) {
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,80,200,0.035)';
+  ctx.strokeStyle = 'rgba(255,80,200,0.03)';
   ctx.lineWidth = 1;
-  const step = 30;
+  const step = 60;
   for (let x = 0; x <= W; x += step) {
     ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke();
   }
@@ -128,56 +130,85 @@ function _drawCyberGrid(ctx, W, H) {
   ctx.restore();
 }
 
-// 背景 8 颗呼吸彩点：颜色粉/青交替，亮度随时间正弦波动
+function _lerp(a, b, t) { return a + (b - a) * t; }
+
+// 8 颗漂浮粒子（粉/青交替）：各自独立周期 7-21s 的 drift 动画
+// keyframes 对齐：
+//   0%/100% → (0, 0)        opacity 0.6
+//   33%     → (5, -15)      opacity 1.0
+//   66%     → (-4, -8)      opacity 0.8
+const _PARTICLES = [
+  { x: 0.08, y: 0.08, r: 2.0, period:  9000, phase: 0.00 },
+  { x: 0.22, y: 0.20, r: 3.0, period: 13000, phase: 0.18 },
+  { x: 0.40, y: 0.06, r: 1.8, period:  7000, phase: 0.35 },
+  { x: 0.62, y: 0.22, r: 3.5, period: 16000, phase: 0.52 },
+  { x: 0.80, y: 0.10, r: 2.2, period: 11000, phase: 0.06 },
+  { x: 0.92, y: 0.30, r: 2.6, period: 19000, phase: 0.71 },
+  { x: 0.28, y: 0.55, r: 4.0, period: 21000, phase: 0.42 },
+  { x: 0.72, y: 0.68, r: 2.4, period: 15000, phase: 0.85 }
+];
+
 function _drawParticles(ctx, W, H, timeMs) {
-  const t = (timeMs || 0) * 0.001;
+  const t = timeMs || 0;
   ctx.save();
-  for (let i = 0; i < 8; i++) {
-    const px = (0.08 + (i % 4) * 0.22) * W;        // X 按列分布
-    const py = (0.06 + ((i * 17) % 65) / 100) * H; // Y 用素数 17 打散，避免成行
-    const r = 1.2 + (i % 3) * 0.6;
-    const a = 0.25 + Math.sin(t * 1.4 + i) * 0.12; // 透明度呼吸
+  for (let i = 0; i < _PARTICLES.length; i++) {
+    const c = _PARTICLES[i];
+    const phase = (((t / c.period) + c.phase) % 1 + 1) % 1;
+    let dx, dy, a;
+    if (phase < 0.33) {
+      const f = phase / 0.33;
+      dx = _lerp(0,    5, f); dy = _lerp(0,  -15, f); a = _lerp(0.6, 1.0, f);
+    } else if (phase < 0.66) {
+      const f = (phase - 0.33) / 0.33;
+      dx = _lerp(5,   -4, f); dy = _lerp(-15, -8, f); a = _lerp(1.0, 0.8, f);
+    } else {
+      const f = (phase - 0.66) / 0.34;
+      dx = _lerp(-4,   0, f); dy = _lerp(-8,   0, f); a = _lerp(0.8, 0.6, f);
+    }
+    const isPink = i % 2 === 0;
+    const px = c.x * W + dx;
+    const py = c.y * H + dy;
     ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fillStyle = i % 2 === 0 ? `rgba(255,80,200,${a})` : `rgba(64,224,208,${a * 0.9})`;
-    ctx.shadowColor = i % 2 === 0 ? 'rgba(255,80,200,0.4)' : 'rgba(64,224,208,0.35)';
-    ctx.shadowBlur = 4 + i;
+    ctx.arc(px, py, c.r, 0, Math.PI * 2);
+    ctx.fillStyle = isPink ? `rgba(255,80,200,${a})` : `rgba(64,224,208,${a * 0.9})`;
+    ctx.shadowColor = isPink ? 'rgba(255,80,200,0.4)' : 'rgba(64,224,208,0.35)';
+    ctx.shadowBlur = 4 + c.r * 2;
     ctx.fill();
     ctx.shadowBlur = 0;
   }
   ctx.restore();
 }
 
-/** 首页底部彩色气球：顺序由小变大、波峰沿队列移动，类似 loading 点 */
-function _drawTrailLoadingDots(ctx, cx, baseY, timeMs) {
-  const trail = ['🔴', '🟠', '🟡', '🟢', '🔵', '🟣'];                // 6 个气球颜色
-  const off = [-64, -40, -14, 14, 40, 64];                            // 与中心点的横向偏移
-  const n = trail.length;
-  const floatIdx = (timeMs / 520) % n;                                // 当前波峰所在的浮点索引
-  const baseSizes = [13, 14, 15, 15.5, 16, 17];                       // 每个气球基础字号
+// 6 颗装饰气球：emoji 横排，尺寸 16→31，各自独立 float（周期 / 延迟错开形成波浪）
+// float keyframes:  0%/100% translateY(0) → 50% translateY(-8)，ease-in-out
+const _DECOR_BALLOONS = [
+  { emoji: '🔴', size: 16, period: 2500, delay:    0, alpha: 0.70, glow: 'rgba(255,80,80,0.4)'   },
+  { emoji: '🟠', size: 19, period: 2800, delay:  400, alpha: 0.75, glow: 'rgba(255,145,0,0.4)'   },
+  { emoji: '🟡', size: 22, period: 3100, delay:  800, alpha: 0.80, glow: 'rgba(255,215,64,0.4)'  },
+  { emoji: '🟢', size: 25, period: 3400, delay: 1200, alpha: 0.85, glow: 'rgba(80,220,160,0.4)'  },
+  { emoji: '🔵', size: 28, period: 3700, delay: 1600, alpha: 0.90, glow: 'rgba(80,160,255,0.4)'  },
+  { emoji: '🟣', size: 31, period: 4000, delay: 2000, alpha: 0.95, glow: 'rgba(168,85,247,0.4)'  }
+];
+
+function _drawDecorBalloons(ctx, cx, baseY, timeMs) {
+  const n = _DECOR_BALLOONS.length;
+  const gap = 36;
+  const startX = cx - gap * (n - 1) / 2;
   for (let i = 0; i < n; i++) {
-    let di = floatIdx - i;
-    if (di > n / 2) di -= n;                                          // 让 di 在环形序列里走最近距离
-    if (di < -n / 2) di += n;
-    const sigma = 0.55;
-    const peak = Math.exp(-(di * di) / (2 * sigma * sigma));          // 高斯权重，距离波峰越近越亮越大
-    const scale = 0.38 + 0.82 * peak;
-    const alpha = 0.5 + 0.5 * peak;
-    const bob = Math.sin(timeMs * 0.0024 + i * 0.65) * 2.5 * (0.35 + peak); // 上下浮动
+    const b = _DECOR_BALLOONS[i];
+    const phase = ((((timeMs - b.delay) / b.period) % 1) + 1) % 1;
+    const dy = -4 * (1 - Math.cos(phase * Math.PI * 2));            // ease-in-out 0..-8..0
+    const px = startX + i * gap;
+    const py = baseY + dy;
     ctx.save();
-    ctx.translate(cx + off[i], baseY + bob);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = alpha;
-    if (peak > 0.25) {                                                // 仅在亮气球上加发光，省 GPU
-      ctx.shadowColor = i % 2 === 0 ? 'rgba(255,80,200,0.45)' : 'rgba(64,224,208,0.4)';
-      ctx.shadowBlur = 6 + peak * 10;
-    }
-    const fs = baseSizes[i];
-    ctx.font = `500 ${fs}px ${UX.font}`;
+    ctx.globalAlpha = b.alpha;
+    ctx.shadowColor = b.glow;
+    ctx.shadowBlur = 10;
+    ctx.font = `500 ${b.size}px ${UX.font}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(trail[i], 0, 0);
+    ctx.fillText(b.emoji, px, py);
     ctx.restore();
   }
 }
@@ -257,6 +288,7 @@ module.exports = {
       state.lastLevel = store.getLastPlayedLevel() || 1;
       state.highestLevel = store.getHighestLevel() || 1;
       state.isFirstTime = !!user.isFirstTime;
+      state.isLoggedIn = !!user.isLoggedIn;
       state.hasTeam = !!team;
       state.teamName = team?team.name:'';
       state.teamMemberCount = team?(team.members?team.members.length:team.memberCount||0):0;
@@ -264,8 +296,15 @@ module.exports = {
       state.topTeams = ranked.slice(0,5);
       state.recentBalloons = ownedList;
 
-      // 首次未授权通知：弹一次通知弹窗，并记录提示时间，避免反复打扰
-      if (!store.isNotificationAuthorized() && !(store.getUser().lastNotificationPrompt)) {
+      // 未登录 且 本次进程内还没提示过：拉起微信授权登录弹窗
+      // _authPromptDone 在用户登录 / 主动暂不登录后置 true，避免热恢复反复弹；
+      // 退出登录会在 profile 里把它复位为 false，下次进入 home 重新提示。
+      if (!state.isLoggedIn && !this._authPromptDone) {
+        state.showLoginModal = true;
+      }
+
+      // 首次未授权通知：登录后再提示，避免与登录弹窗叠层
+      if (state.isLoggedIn && !store.isNotificationAuthorized() && !(store.getUser().lastNotificationPrompt)) {
         state.showNotification = true;
         store.updateUser({lastNotificationPrompt: Date.now()});
       }
@@ -311,21 +350,20 @@ module.exports = {
     ctx.scale(1, scaleY);                                              // 仅纵向 scale，避免横向被拉伸
     let y = 0;                                                         // 之后所有区块的 y 累加都基于 0
 
-    // —— Hero：顶部 POP-LOGO 主视觉（呼吸缩放 + 粉色光晕） ——
-    const heroR = 40;                                  // 占位半径，沿用一屏适配里的尺寸
-    const logoSize = heroR * 2 + 16;                   // LOGO 容器尺寸（直径 + 一点余量）
-    const hy = y + heroR;                              // 容器中心 Y
-    const heroPulse = 1 + 0.05 * Math.sin(t * 0.0028); // 整体微微缩放呼吸
+    // —— Hero：顶部 POP-LOGO 主视觉（3s 上下浮动 + 粉色发光） ——
+    const heroR = 40;                                          // 占位半径，沿用一屏适配里的尺寸
+    const logoSize = heroR * 2 + 16;                           // LOGO 容器尺寸（直径 + 一点余量）
+    const hyBase = y + heroR;                                  // 容器基线中心 Y（用于布局，不随动画偏移）
+    const heroPhase = ((t % 3000) / 3000);                     // 0..1
+    const heroDy = -4 * (1 - Math.cos(heroPhase * Math.PI * 2)); // ease-in-out: 0 → -8 → 0
+    const hy = hyBase + heroDy;                                // 实际绘制中心
     ctx.save();
-    ctx.translate(cx, hy);
-    ctx.scale(heroPulse, heroPulse);
-    ctx.translate(-cx, -hy);
-    ctx.shadowColor = 'rgba(255,80,200,0.55)';
-    ctx.shadowBlur = 22;
+    ctx.shadowColor = 'rgba(255,80,200,0.3)';
+    ctx.shadowBlur = 30;
     _drawIconFit(ctx, UI_IMG.popLogo, cx - logoSize / 2, hy - logoSize / 2, logoSize, logoSize, scaleY); // 居中绘制 LOGO（容器控大小，纵向缩放反向补偿避免压扁）
     ctx.shadowBlur = 0;
     ctx.restore();
-    y = hy + heroR + 24;                                                                       // 圆圈底到标题：固定 48px
+    y = hyBase + heroR + 24;                                                                   // 圆圈底到标题：固定 48px（用基线，不受动画影响）
     drawText(ctx, '不准爆！', cx, y, '#ffffff', 24, 'center', 'rgba(255,80,200,0.75)', 700);    // 主标题（粉色发光）
     y += 32;
     drawText(ctx, '按住充气，在临界点精准松手！', cx, y, 'rgba(255,255,255,0.45)', 12, 'center', undefined, 400); // 副标题第一行
@@ -333,9 +371,9 @@ module.exports = {
     drawText(ctx, '就是这么刺激！', cx, y, 'rgba(255,255,255,0.45)', 12, 'center', undefined, 400); // 副标题第二行
     y += 26;
 
-    // 装饰气球：loading 式顺序放大（波峰沿队列移动）
+    // 装饰气球：6 颗 emoji 横排，各自独立 float（周期 2.5~4.0s、延迟 0~2.0s）
     const baseY = y + 26;
-    _drawTrailLoadingDots(ctx, cx, baseY, t);
+    _drawDecorBalloons(ctx, cx, baseY, t);
     y = baseY + 44;
     // 主视觉与卡片区之间留白：让统计卡、轮播、主卡整体下移
     y += 36;
@@ -655,6 +693,12 @@ module.exports = {
 
     state.contentHeight = topY + y * scaleY + safeB + 10; // 记录内容总高，便于将来做滚动
 
+    // 7. 微信授权登录弹窗（最高优先级，遮挡下方所有交互）
+    if (state.showLoginModal) {
+      this._drawLoginModal(ctx, W, H);
+      return;
+    }
+
     // 8. 通知弹窗（尺寸与字号随屏宽收敛，避免占满屏、字过大）
     if (state.showNotification) {
       drawModalBackground(ctx, W, H);
@@ -751,5 +795,134 @@ module.exports = {
   onNotificationCancel() {                     // 通知弹窗：暂不开启
     state.showNotification = false;
     store.setNotificationAuthorized(false);
+  },
+
+  // ─── 微信授权登录弹窗 ────────────────────────────────────
+  // 进程内是否已经处理过（登录成功 / 主动暂不登录）；profile 退出登录时会复位
+  _authPromptDone: false,
+  _drawLoginModal(ctx, W, H) {
+    const scene = this;
+    drawModalBackground(ctx, W, H);
+    // 1) 整屏吸收点（先于按钮注册）：登录弹窗打开期间禁掉首页其它触区，
+    //    避免「弹窗打开还能点开始挑战」的穿透 bug。
+    scene.manager.addTouchable(0, 0, W, H, '_loginModalAbsorb');
+
+    const side = 36;
+    const mw = Math.min(W - side * 2, 360);
+    const mh = 400;
+    const mx = (W - mw) / 2;
+    const my = Math.max(60, (H - mh) / 2);
+    const rx = 22;
+
+    // 卡片背景：紫黑渐变 + 粉色描边发光
+    ctx.save();
+    roundRect(ctx, mx, my, mw, mh, rx);
+    const bg = ctx.createLinearGradient(mx, my, mx, my + mh);
+    bg.addColorStop(0, 'rgba(30,10,52,0.96)');
+    bg.addColorStop(1, 'rgba(10,2,28,0.98)');
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.shadowColor = 'rgba(255,80,200,0.35)';
+    ctx.shadowBlur = 22;
+    ctx.strokeStyle = 'rgba(255,80,200,0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // LOGO（已在 onShow 预加载 popLogo）
+    const logoSize = 84;
+    const logoX = W / 2 - logoSize / 2;
+    const logoY = my + 28;
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,80,200,0.4)';
+    ctx.shadowBlur = 22;
+    if (getImage(UI_IMG.popLogo)) {
+      drawImage(ctx, UI_IMG.popLogo, logoX, logoY, logoSize, logoSize);
+    } else {
+      // 兜底：还没加载完也不要空白
+      ctx.beginPath();
+      ctx.arc(W / 2, logoY + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,80,200,0.18)';
+      ctx.fill();
+      drawText(ctx, '🎈', W / 2, logoY + logoSize / 2 + 4, '#fff', 36, 'center');
+    }
+    ctx.restore();
+
+    const titleY = logoY + logoSize + 24;
+    drawText(ctx, '欢迎来到 不准爆！', W / 2, titleY, '#ffffff', 18, 'center', 'rgba(255,80,200,0.55)', 700);
+
+    drawWrappedText(
+      ctx,
+      '授权获取你的微信昵称和头像，用于展示个人资料、战队成员与排行榜信息。',
+      mx + 24, titleY + 26, mw - 48, 20,
+      'rgba(255,255,255,0.6)', 13, 400
+    );
+
+    // 主按钮：微信一键登录（紫→粉渐变胶囊）
+    const btnH = 48;
+    const btnW = mw - 48;
+    const btnX = mx + 24;
+    const policyH = 16;
+    const skipH = 36;
+    const gap = 12;
+    const bottomPad = 22;
+    const btnY = my + mh - bottomPad - policyH - gap - skipH - gap - btnH;
+
+    ctx.save();
+    roundRect(ctx, btnX, btnY, btnW, btnH, 24);
+    const bg2 = ctx.createLinearGradient(btnX, btnY, btnX + btnW, btnY + btnH);
+    bg2.addColorStop(0, '#7c4dff');
+    bg2.addColorStop(1, '#ff50c8');
+    ctx.fillStyle = bg2;
+    ctx.shadowColor = 'rgba(255,80,200,0.45)';
+    ctx.shadowBlur = 18;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+    drawText(ctx, '微信一键登录', W / 2, btnY + btnH / 2, '#ffffff', 16, 'center', 'rgba(0,0,0,0.25)', 700);
+    scene.manager.addTouchable(btnX, btnY, btnW, btnH, 'loginWithWeChat');
+
+    // 副按钮：退出游戏（直接关闭小程序）
+    const skipY = btnY + btnH + gap;
+    drawText(ctx, '退出游戏', W / 2, skipY + skipH / 2, 'rgba(255,255,255,0.55)', 13, 'center', undefined, 500);
+    scene.manager.addTouchable(W / 2 - 96, skipY, 192, skipH, 'exitMiniProgram');
+
+    // 协议
+    const policyY = skipY + skipH + gap;
+    drawText(ctx, '登录即表示同意《用户协议》和《隐私政策》', W / 2, policyY + policyH / 2, 'rgba(255,255,255,0.32)', 11, 'center', undefined, 400);
+  },
+  _loginModalAbsorb() { /* 吸收弹窗外的所有点击，阻断穿透 */ },
+  loginWithWeChat() {                          // 主按钮：微信一键登录（当前为 mock，待接真实授权）
+    const scene = this;
+    // TODO(prod)：上线前替换为 wx.getUserProfile / wx.createUserInfoButton 真实授权流程
+    const mockNicks = ['糖果小仙女', '霓虹少年', '气球猎人', '星河旅人', '夜光甜筒', '泡泡先生'];
+    const nickName = mockNicks[Math.floor(Math.random() * mockNicks.length)];
+    store.updateUser({
+      isLoggedIn: true,
+      nickName: nickName,
+      avatar: '',
+      isFirstTime: false
+    });
+    scene._authPromptDone = true;
+    state.showLoginModal = false;
+    scene._refresh();
+    showToast('登录成功');
+  },
+  exitMiniProgram() {                          // 副按钮：退出游戏（关闭小程序）
+    // 微信小游戏 / 小程序：调用 wx.exitMiniProgram 退到对话列表
+    if (typeof wx !== 'undefined' && typeof wx.exitMiniProgram === 'function') {
+      try {
+        wx.exitMiniProgram({
+          fail: () => showToast('请从右上角胶囊「···」选择关闭')
+        });
+      } catch (e) {
+        console.warn('[home.exitMiniProgram] 调用失败:', e && e.message);
+        showToast('请从右上角胶囊「···」选择关闭');
+      }
+    } else {
+      // 开发者工具 / 老基础库兜底：API 不可用时给出明确提示
+      showToast('请从右上角胶囊「···」选择关闭');
+    }
   }
 };

@@ -8,7 +8,7 @@
 //   6. 完美充气改为绿色矢量气球 + 大按钮 + 进度圆点同行计数
 //   7. 全局弹窗左右各 40（宽 W-80）；标题 ≤18 / 正文与按钮 14 / 辅助 12
 //   8. 重开 toast 统一 90% 不透明 / 14px
-const { drawBackground, drawText, drawButton, drawButtonGradient, drawImage, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, LEVEL_BG, beginScrollView, endScrollView, drawWrappedText, drawModalBackground } = require('../engine/canvas-ui');
+const { drawBackground, drawText, drawButton, drawButtonGradient, drawImage, getImage, loadImages, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, LEVEL_BG, beginScrollView, endScrollView, drawWrappedText, drawModalBackground, drawToggle } = require('../engine/canvas-ui');
 const { drawBalloon, drawBalloonShape, spawnExplosion, resetParticles, getBalloonCenter } = require('../engine/balloon-renderer');
 const { drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 const { drawGauge } = require('../engine/gauge-renderer');
@@ -75,6 +75,12 @@ module.exports = {
       store.updateUser({ isFirstTime: false });
     }
 
+    try { loadImages(['images/ui/setting.png'], () => {}); } catch (_) {}
+
+    // 进场就提前创建两个音频实例，开始后台加载，首次按下不丢首声
+    this._ensurePumpAudio();
+    this._ensureExplodeAudio();
+
     this._initLevel();
 
     if (data && data.isNewGame) { /* First time flow */ }
@@ -127,6 +133,7 @@ module.exports = {
     if (state.pumpTipTimer) { clearTimeout(state.pumpTipTimer); state.pumpTipTimer = null; }
     state.isHolding = false;
     state.showPumpTip = false;
+    this._stopPumpAudio();
   },
 
   _initLevel() {
@@ -206,7 +213,7 @@ module.exports = {
 
     // ─── 顶部导航栏（充气挑战 + 副标题） ─────────────
     const navTitleY = Math.max(L.navTitleY || 32, 32);
-    drawIconBtn(ctx, 14, navTitleY - 22, 44, '⚙️', UI, 'openSettings');
+    drawIconBtn(ctx, 14, navTitleY - 22, 44, 'images/ui/setting.png', UI, 'openSettings');
 
     ctx.save();
     ctx.shadowColor = 'rgba(244,114,182,0.4)';
@@ -546,12 +553,14 @@ module.exports = {
 
   _startPump() {
     if (this._pumpTimer) clearInterval(this._pumpTimer);
+    this._startPumpAudio();
     this._pumpTimer = setInterval(() => {
       const next = Math.min(state.pressure + (0.8 + Math.random() * 0.4), 100);
       state.pressure = next;
       if (next >= 100) {
         clearInterval(this._pumpTimer); this._pumpTimer = null;
         state.isHolding = false;
+        this._stopPumpAudio();
         this._failPump('explode', 100);
       }
     }, 50);
@@ -559,6 +568,89 @@ module.exports = {
 
   _stopPump() {
     if (this._pumpTimer) { clearInterval(this._pumpTimer); this._pumpTimer = null; }
+    this._stopPumpAudio();
+  },
+
+  // ─── 充气音效（按下→松开循环播放）──────────────────────
+  // 单例 wx.createInnerAudioContext + loop=true；按下 play()，松手 stop()。
+  // 关键坑：① 不要在 play 前调 seek，未就绪时 seek 会让随后的 play 不响；
+  //        ② iOS 必须 obeyMuteSwitch=false，否则静音键开着就没声；
+  //        ③ 在 onShow 里就 ensure，让加载提前，首次按下不延迟。
+  _ensurePumpAudio() {
+    if (this._pumpAudio) return;
+    if (typeof wx === 'undefined' || typeof wx.createInnerAudioContext !== 'function') return;
+    try {
+      const audio = wx.createInnerAudioContext();
+      audio.src = 'audio/daqisheng.MP3';
+      audio.loop = true;
+      audio.obeyMuteSwitch = false;
+      audio.volume = 1.0;
+      if (audio.onCanplay) audio.onCanplay(() => { console.log('[battle.pumpAudio] canplay'); });
+      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.pumpAudio] playing'); });
+      if (audio.onStop)    audio.onStop(()    => { console.log('[battle.pumpAudio] stopped'); });
+      if (audio.onError)   audio.onError((err)=> { console.warn('[battle.pumpAudio] onError:', err && (err.errMsg || err)); });
+      this._pumpAudio = audio;
+    } catch (e) {
+      console.warn('[battle.pumpAudio] init failed:', e && e.message);
+    }
+  },
+  _startPumpAudio() {
+    try {
+      const settings = store.getSettings && store.getSettings();
+      if (settings && settings.soundOn === false) return; // 设置里关了音效就别播
+    } catch (_) {}
+    this._ensurePumpAudio();
+    const a = this._pumpAudio;
+    if (!a) return;
+    try {
+      // stop 之后 position 已经回到 0，无需 seek；
+      // 直接 play()，没就绪也会先缓冲再播，不会丢声。
+      if (typeof a.play === 'function') a.play();
+    } catch (e) {
+      console.warn('[battle.pumpAudio] play failed:', e && e.message);
+    }
+  },
+  _stopPumpAudio() {
+    const a = this._pumpAudio;
+    if (!a) return;
+    try { if (typeof a.stop === 'function') a.stop(); } catch (_) {}
+  },
+
+  // 爆炸音效（单次播放，不循环）
+  _ensureExplodeAudio() {
+    if (this._explodeAudio) return;
+    if (typeof wx === 'undefined' || typeof wx.createInnerAudioContext !== 'function') return;
+    try {
+      const audio = wx.createInnerAudioContext();
+      audio.src = 'audio/baozha.MP3';
+      audio.loop = false;
+      audio.obeyMuteSwitch = false;
+      audio.volume = 1.0;
+      if (audio.onCanplay) audio.onCanplay(() => { console.log('[battle.explodeAudio] canplay'); });
+      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.explodeAudio] playing'); });
+      if (audio.onEnded)   audio.onEnded(()   => { console.log('[battle.explodeAudio] ended'); });
+      if (audio.onError)   audio.onError((err)=> { console.warn('[battle.explodeAudio] onError:', err && (err.errMsg || err)); });
+      this._explodeAudio = audio;
+    } catch (e) {
+      console.warn('[battle.explodeAudio] init failed:', e && e.message);
+    }
+  },
+  _playExplosionAudio() {
+    try {
+      const settings = store.getSettings && store.getSettings();
+      if (settings && settings.soundOn === false) return;
+    } catch (_) {}
+    this._ensureExplodeAudio();
+    const a = this._explodeAudio;
+    if (!a) return;
+    try {
+      // 连续爆炸时先 stop（会自动复位到 0），然后立刻 play；不要在这里 seek，
+      // 否则在「未就绪」状态下会把 play 截胡。
+      if (typeof a.stop === 'function') a.stop();
+      if (typeof a.play === 'function') a.play();
+    } catch (e) {
+      console.warn('[battle.explodeAudio] play failed:', e && e.message);
+    }
   },
 
   _checkPressure() {
@@ -584,7 +676,7 @@ module.exports = {
     else if (reason === 'high') { state.failTitle = '气球炸了！'; state.failDesc = '超过目标上限 ' + targetMax + '。本次：' + Math.round(p); }
     else { state.failTitle = '充气不足'; state.failDesc = '未达到目标下限 ' + targetMin + '。本次：' + Math.round(p); }
     if (reason === 'explode') { setTimeout(() => state.flashWhite = false, 150); setTimeout(() => state.isExploding = false, 520); }
-    if (reason === 'explode') { const c = getBalloonCenter(); spawnExplosion(c.x, c.y); }
+    if (reason === 'explode') { const c = getBalloonCenter(); spawnExplosion(c.x, c.y); this._playExplosionAudio(); }
   },
 
   _resetInLevel() {
@@ -606,7 +698,19 @@ module.exports = {
     const seqItem = seq[state.balloonInLevel] || seq[0];
     const equippedId = store.getEquippedLegend(state.currentLevelIdx);
     const isPaidSlot = state.balloonInLevel === 9 && !!equippedId;
-    const list = (state.completedBalloonsList || []).concat([{ shape: seqItem.shape, color: seqItem.color, glowColor: seqItem.glowColor, isPaid: isPaidSlot }]);
+    const equippedMeta = isPaidSlot ? BALLOON_TYPES.find(b => b.id === equippedId) : null;
+    const completedMeta = equippedMeta || seqItem;
+    if (!isPaidSlot && seqItem.balloonId) {
+      store.addBalloon(seqItem.balloonId, 1, 'challenge');
+    }
+    const list = (state.completedBalloonsList || []).concat([{
+      balloonId: completedMeta.balloonId || completedMeta.id,
+      name: completedMeta.name,
+      shape: completedMeta.shape,
+      color: completedMeta.color,
+      glowColor: completedMeta.glowColor,
+      isPaid: isPaidSlot
+    }]);
 
     state.pumpDisabled = false;
 
@@ -999,7 +1103,6 @@ module.exports = {
     const py = 22, px = 20;
     const titleH = 22, gap = 10, rowH = 40, actionH = 44, footerH = 28;
     const settings = store.getSettings();
-    const toggleTrackH = 24;
     const actions = [
       { text: '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
     ];
@@ -1023,7 +1126,11 @@ module.exports = {
     toggles.forEach((t, i) => {
       const ry = my + py + titleH + gap + i * rowH;
       drawText(ctx, t.label, mx + px, ry + rowH / 2, 'rgba(255,255,255,0.85)', 14, 'left', undefined, 500);
-      this._drawToggle(ctx, mx + mw - px - 44, ry + (rowH - toggleTrackH) / 2, !!settings[t.key], t.handler);
+      const tw = 50, th = 30;
+      const tx = mx + mw - px - tw;
+      const ty = ry + (rowH - th) / 2;
+      drawToggle(ctx, tx, ty, !!settings[t.key]);
+      this.manager.addTouchable(tx - 8, ty - 8, tw + 16, th + 16, t.handler);
     });
 
     const actionsY = my + py + titleH + gap + rowH * 3 + gap;
@@ -1458,6 +1565,7 @@ module.exports = {
   },
   confirmResetChallenge() {
     store.resetChallengeProgress();
+    store.reunlockLevelsFromOwnedCommonBalloons();
     state.showResetChallengeConfirm = false;
     state.gameState = 'idle';
     state.pumpDisabled = false;
@@ -1480,7 +1588,7 @@ module.exports = {
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.4)');
     drawText(ctx, '确认放弃？', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    drawWrappedText(ctx, '确认放弃当前挑战？进度将清零且不消耗重开次数。', mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
+    drawWrappedText(ctx, '确认放弃？将重置闯关关卡进度（已获得的普通气球不会消失）。', mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
@@ -1488,35 +1596,6 @@ module.exports = {
     const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, '确认放弃', 'rgba(255,23,68,0.2)', '#ff1744', 14, 12, undefined, 700);
     this.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmAbandon');
     ctx.restore();
-  },
-  // 精致开关：轨道 44×24（圆角 12），滑钮 18×18（半径 9），左右内边距 3px
-  _drawToggle(ctx, x, y, on, handler) {
-    const tw = 44, th = 24;
-    const inset = 3;
-    const knobR = (th - inset * 2) / 2;
-    ctx.save();
-    roundRect(ctx, x, y, tw, th, th / 2);
-    ctx.fillStyle = on ? '#86efac' : 'rgba(255,255,255,0.18)';
-    ctx.fill();
-    ctx.strokeStyle = on ? 'rgba(134,239,172,0.5)' : 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
-
-    const knobCx = on ? x + tw - inset - knobR : x + inset + knobR;
-    const knobCy = y + th / 2;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.35)';
-    ctx.shadowBlur = 3;
-    ctx.shadowOffsetY = 1;
-    ctx.beginPath();
-    ctx.arc(knobCx, knobCy, knobR, 0, Math.PI * 2);
-    ctx.fillStyle = '#ffffff';
-    ctx.fill();
-    ctx.restore();
-
-    const hitPad = 8;
-    this.manager.addTouchable(x - hitPad, y - hitPad, tw + hitPad * 2, th + hitPad * 2, handler);
   },
   closeSettings() { state.showSettings = false; },
   toggleSound() {
@@ -1541,7 +1620,12 @@ module.exports = {
     }, 500);
   },
   abandonChallenge() { state.showAbandonConfirm = true; },
-  confirmAbandon() { state.showAbandonConfirm = false; state.showSettings = false; this.manager.switchTo('home'); },
+  confirmAbandon() {
+    state.showAbandonConfirm = false;
+    state.showSettings = false;
+    store.abandonChallengeResetProgress();
+    this.manager.switchTo('home');
+  },
   cancelAbandon() { state.showAbandonConfirm = false; },
   openSettings() { state.showSettings = true; },
 
@@ -1588,11 +1672,18 @@ module.exports = {
 
 };
 
-// ─── Nav icon button helper（接受 handler 参数，Bug 5 修复） ──
-function drawIconBtn(ctx, x, y, size, emoji, scene, handler) {
+// ─── Nav icon button helper（支持传入 PNG 路径或 emoji 文本） ──
+function drawIconBtn(ctx, x, y, size, icon, scene, handler) {
   ctx.save(); roundRect(ctx, x, y, size, size, size * 0.3);
   ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
   ctx.strokeStyle = 'rgba(255,80,200,0.3)'; ctx.lineWidth = 1; ctx.stroke(); ctx.restore();
-  drawText(ctx, emoji, x + size / 2, y + size / 2 + 2, '#ffffff', size * 0.45, 'center');
+  const isImg = typeof icon === 'string' && /\.(png|jpe?g|webp)$/i.test(icon);
+  const img = isImg ? getImage(icon) : null;
+  if (img) {
+    const s = Math.round(size * 0.6);
+    drawImage(ctx, icon, x + (size - s) / 2, y + (size - s) / 2, s, s);
+  } else {
+    drawText(ctx, icon, x + size / 2, y + size / 2 + 2, '#ffffff', size * 0.45, 'center');
+  }
   scene.manager.addTouchable(x, y, size, size, handler || 'openSettings');
 }
