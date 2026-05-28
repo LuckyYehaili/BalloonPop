@@ -5,10 +5,10 @@ const {
 } = require('../engine/canvas-ui');
 const { drawPageHeader } = require('../engine/page-header');
 const store = require('../store');
+const { purchaseLegendBalloon } = require('../cloud-pay');
 const { BALLOON_TYPES, LEVELS } = require('../balloons');
 const UX = require('../ui-theme');
 const { getCapsuleLayout } = require('../layout-safe');
-const { drawBalloonShape } = require('../engine/balloon-renderer');
 const { drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 
 const TAB_H = 50;
@@ -20,8 +20,8 @@ const TYPE = {
   status: 9,
   action: 12,
   modalTitle: 15,
-  modalBody: 12,
-  modalSub: 11,
+  modalBody: 14,
+  modalSub: 12,
   button: 13,
   close: 13
 };
@@ -43,17 +43,28 @@ const COLLECTION_UI = {
 };
 
 /** 气球束缩略图数据：优先使用通关保存的 balloons（10 枚） */
+function _normalizeBouquetBalloon(item, fallbackMeta) {
+  const meta = (item && item.balloonId && BALLOON_TYPES.find(x => x.id === item.balloonId)) || fallbackMeta || null;
+  return Object.assign({}, item || {}, meta ? {
+    emoji: item && item.emoji ? item.emoji : meta.emoji,
+    shape: item && item.shape ? item.shape : meta.shape,
+    color: item && item.color ? item.color : meta.color,
+    glowColor: item && item.glowColor ? item.glowColor : meta.glowColor
+  } : {});
+}
+
 function _bouquetThumbBalloons(bq) {
   let arr = [];
   if (bq.balloons && Array.isArray(bq.balloons) && bq.balloons.length) arr = bq.balloons;
   else if (bq.originalBalloons && bq.originalBalloons.length) arr = bq.originalBalloons;
   else if (bq.sourceBalloonId) {
     const m = BALLOON_TYPES.find(x => x.id === bq.sourceBalloonId);
-    if (m) arr = [{ shape: m.shape, color: m.color, glowColor: m.glowColor }];
+    if (m) arr = [_normalizeBouquetBalloon({ balloonId: m.id }, m)];
   }
-  if (!arr.length) return [{ shape: 'round', color: '#94a3b8', glowColor: '#64748b' }];
-  if (arr.length === 1) return Array.from({ length: 8 }, () => Object.assign({}, arr[0]));
-  return arr;
+  if (!arr.length) return [{ emoji: '🎈', shape: 'round', color: '#94a3b8', glowColor: '#64748b' }];
+  const normalized = arr.map(item => _normalizeBouquetBalloon(item));
+  if (normalized.length === 1) return Array.from({ length: 8 }, () => Object.assign({}, normalized[0]));
+  return normalized;
 }
 
 /** 已结算花束静止画面（与通关弹窗同一套布局/丝带/蝴蝶结） */
@@ -273,12 +284,20 @@ const sceneApi = {
     const legends = BALLOON_TYPES.filter(b => b.isPaid);
     state.legendList = legends.map(l => {
       const o = owned.find(x => x.id === l.id);
+      const availableQuantity = o ? Math.max(0, o.quantity - (o.frozenQuantity || (o.frozen ? 1 : 0))) : 0;
+      const usedLevels = store.getLegendUsedLevels(l.id);
+      let canEquipAny = false;
+      for (let i = 0; i < LEVELS.length; i++) {
+        if (store.canEquipLegend(i, l.id).ok) { canEquipAny = true; break; }
+      }
       return {
         ...l,
         owned: !!(o && o.quantity > 0),
         quantity: o ? o.quantity : 0,
         frozenQuantity: o ? (o.frozenQuantity || (o.frozen ? 1 : 0)) : 0,
-        availableQuantity: o ? Math.max(0, o.quantity - (o.frozenQuantity || (o.frozen ? 1 : 0))) : 0,
+        availableQuantity,
+        usedLevels,
+        legendInflated: !!(o && o.quantity > 0 && !canEquipAny),
         giftable: o ? !!o.giftable : false,
         wearable: o ? o.wearable !== false : false,
         frozen: o ? !!o.frozen : false
@@ -431,6 +450,7 @@ const sceneApi = {
       const cx = bx + bw / 2;
       const cyBall = by + bw * 0.4;
       const br = bw * 0.28;
+      const emojiFs = b.owned ? Math.max(12, bw * 0.35 - 4) : bw * 0.35;
 
       if (!b.unlocked && !b.owned) {
         _drawMysteryRoundPlaceholder(ctx, cx, cyBall, br);
@@ -440,11 +460,7 @@ const sceneApi = {
         drawText(ctx, '未解锁', cx, cyBall + 4, 'rgba(255,255,255,0.45)', TYPE.status, 'center', undefined, 500);
         drawText(ctx, '未知', cx, by + bw - 12, 'rgba(255,255,255,0.28)', TYPE.cardLabel, 'center', undefined, 400);
       } else {
-        if (b.shape && b.color) {
-          drawBalloonShape(ctx, b.shape, cx, cyBall, br, b.color, b.glowColor || b.color, 0, 0.35, false, 0, dpr, true);
-        } else {
-          drawText(ctx, b.emoji, cx, cyBall, b.owned ? '#ffffff' : 'rgba(255,255,255,0.2)', bw * 0.35, 'center');
-        }
+        drawText(ctx, b.emoji || '🎈', cx, cyBall, b.owned ? '#ffffff' : 'rgba(255,255,255,0.2)', emojiFs, 'center');
         drawText(ctx, b.name, cx, by + bw - 12, b.owned ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.22)', TYPE.cardLabel, 'center', undefined, 400);
         if (!b.owned) {
           ctx.fillStyle = COLLECTION_UI.overlayFill;
@@ -470,7 +486,7 @@ const sceneApi = {
     let yy = contentTop;
 
     if (state.legendList.length === 0) {
-      drawWrappedText(ctx, '暂无传奇气球配置。', 24, yy + 20, W - 48, 19, 'rgba(255,255,255,0.35)', TYPE.modalBody, 400);
+      drawWrappedText(ctx, '暂无传奇气球配置。', 24, yy + 20, W - 48, 20, 'rgba(255,255,255,0.35)', TYPE.modalBody, 400);
       return;
     }
 
@@ -487,7 +503,9 @@ const sceneApi = {
       ctx.restore();
 
       if (l.owned) {
-        if (l.frozenQuantity > 0) {
+        if (l.legendInflated) {
+          _drawLegendStatusChip(ctx, bx + 8, by + 7, '已充气', 'rgba(255,152,0,0.18)', '#ffb74d', 'rgba(255,152,0,0.45)');
+        } else if (l.frozenQuantity > 0) {
           _drawLegendStatusChip(ctx, bx + 8, by + 7, '赠送中×' + l.frozenQuantity, 'rgba(64,196,255,0.18)', '#7dd3fc', 'rgba(64,196,255,0.45)');
         } else if (l.giftable) {
           _drawLegendStatusChip(ctx, bx + 8, by + 7, '可赠送', 'rgba(105,255,71,0.16)', '#86efac', 'rgba(105,255,71,0.42)');
@@ -500,11 +518,7 @@ const sceneApi = {
 
       const mx = bx + gw / 2;
       const iconCy = by + 44;
-      if (l.shape && l.color) {
-      drawBalloonShape(ctx, l.shape, mx, iconCy, 24, l.color, l.glowColor || l.color, 0, 0.4, false, 0, dpr, true);
-      } else {
-      drawText(ctx, l.emoji, mx, iconCy, '#ffffff', 24, 'center');
-      }
+      drawText(ctx, l.emoji || '🎈', mx, iconCy, '#ffffff', 24, 'center');
 
       const nameY = iconCy + 26 + 10;
       drawText(ctx, l.name, mx, nameY, l.owned ? '#ffffff' : 'rgba(255,255,255,0.42)', TYPE.action, 'center', undefined, 500);
@@ -518,13 +532,16 @@ const sceneApi = {
         const cxWear = bx + half / 2;
         const cxGift = bx + half + half / 2;
         const cxSyn = bx + gw / 2;
-        const showSyn = l.availableQuantity >= 2;
-        const showGift = l.giftable && l.availableQuantity >= 1;
+        const showSyn = !l.legendInflated && l.availableQuantity >= 2;
+        const showGift = !l.legendInflated && l.giftable && l.availableQuantity >= 1;
+        const canWear = !l.legendInflated;
 
-        if (!showSyn && !showGift) {
+        if (!canWear) {
+          drawText(ctx, '已充气', mx, actionY, 'rgba(255,152,0,0.75)', TYPE.action, 'center', undefined, 500);
+        } else if (!showSyn && !showGift) {
           drawText(ctx, '穿戴', mx, actionY, UX.gold, TYPE.action, 'center', undefined, 500);
           if (_isVisibleHit(hitTopRow, 30)) scene.manager.addTouchable(bx + half / 2, hitTopRow, half, 30, 'openEquip', l.id);
-        } else if (showSyn && showGift) {
+        } else if (canWear && showSyn && showGift) {
           drawText(ctx, '穿戴', cxWear, actionY, UX.gold, TYPE.action, 'center', undefined, 500);
           drawText(ctx, '合成', cxSyn, actionY, UX.violet, TYPE.action, 'center', undefined, 500);
           const b12 = (gw / 4 + gw / 2) / 2;
@@ -539,14 +556,14 @@ const sceneApi = {
             drawText(ctx, '赠送', cxGift, actionY, UX.success, TYPE.action, 'center', undefined, 500);
             if (_isVisibleHit(hitTopRow, 30)) scene.manager.addTouchable(bx + b23, hitTopRow, gw - b23, 30, 'openGiftConfirm', l.id);
           }
-        } else if (showSyn && !showGift) {
+        } else if (canWear && showSyn && !showGift) {
           drawText(ctx, '穿戴', cxWear, actionY, UX.gold, TYPE.action, 'center', undefined, 500);
           drawText(ctx, '合成', cxGift, actionY, UX.violet, TYPE.action, 'center', undefined, 500);
           if (_isVisibleHit(hitTopRow, 30)) {
             scene.manager.addTouchable(bx, hitTopRow, half, 30, 'openEquip', l.id);
             scene.manager.addTouchable(bx + half, hitTopRow, half, 30, 'openSynConfirm', l.id);
           }
-        } else {
+        } else if (canWear) {
           drawText(ctx, '穿戴', cxWear, actionY, UX.gold, TYPE.action, 'center', undefined, 500);
           if (_isVisibleHit(hitTopRow, 30)) scene.manager.addTouchable(bx, hitTopRow, half, 30, 'openEquip', l.id);
           if (showGift) {
@@ -585,8 +602,8 @@ const sceneApi = {
     const inner = 10;
 
     if (state.bouquets.length === 0) {
-      drawWrappedText(ctx, '暂无气球束。', 24, contentTop + 24, W - 48, 19, 'rgba(255,255,255,0.4)', TYPE.modalBody, 400);
-      drawWrappedText(ctx, '通关关卡或合成传奇气球后，会保存在这里。', 24, contentTop + 24 + 19, W - 48, 19, 'rgba(255,255,255,0.4)', TYPE.modalBody, 400);
+      drawWrappedText(ctx, '暂无气球束。', 24, contentTop + 24, W - 48, 20, 'rgba(255,255,255,0.4)', TYPE.modalBody, 400);
+      drawWrappedText(ctx, '通关关卡或合成传奇气球后，会保存在这里。', 24, contentTop + 24 + 20, W - 48, 20, 'rgba(255,255,255,0.4)', TYPE.modalBody, 400);
       return;
     }
 
@@ -660,10 +677,8 @@ const sceneApi = {
     ctx.translate(mx + mw / 2, my + py + heroH / 2);
     if (sel.type === 'common' && !sel.unlocked && !sel.owned) {
       _drawMysteryRoundPlaceholder(ctx, 0, 0, heroH * 0.36);
-    } else if (sel.shape && sel.color) {
-      drawBalloonShape(ctx, sel.shape, 0, 0, heroH * 0.38, sel.color, sel.glowColor || sel.color, 0, 0.4, false, 0, dpr, true);
     } else {
-      drawText(ctx, sel.emoji || '🎈', 0, 0, '#fff', 40, 'center', undefined, 500);
+      drawText(ctx, sel.emoji || '🎈', 0, 0, '#fff', 48, 'center', undefined, 500);
     }
     ctx.restore();
 
@@ -681,7 +696,7 @@ const sceneApi = {
     } else if (sel.type === 'common' && sel.unlocked && !sel.owned) {
       const b = drawButtonGradient(ctx, mx + px, btnY, mw - px * 2, btnH - 4, '去挑战获得', gradientPink, '#fff', TYPE.button, 12, undefined, 600);
       scene.manager.addTouchable(b.x, b.y, b.w, b.h, 'startChallengeFromCollection');
-    } else if (sel.type === 'legend' && sel.owned && (sel.availableQuantity || 0) > 0) {
+    } else if (sel.type === 'legend' && sel.owned && (sel.availableQuantity || 0) > 0 && !sel.legendInflated) {
       const b = drawButtonGradient(ctx, mx + px, btnY, mw - px * 2, btnH - 4, '穿戴到关卡', UX.gold, '#1a1025', TYPE.button, 12, 'rgba(255,215,0,0.35)', 600);
       scene.manager.addTouchable(b.x, b.y, b.w, b.h, 'openEquipFromDetail', sel.id);
     } else if (sel.type === 'legend' && !sel.owned && !state.isIOS) {
@@ -726,14 +741,17 @@ const sceneApi = {
       const ry = my + py + titleH + gap + idx * rowH;
       const eqId = store.getEquippedLegend(lv.id - 1);
       const eqMeta = eqId ? BALLOON_TYPES.find(x => x.id === eqId) : null;
-      const label = eqMeta ? ('当前：' + eqMeta.emoji + ' ' + eqMeta.name) : '当前：未装备';
+      const equipCheck = store.canEquipLegend(idx, bId);
+      const blocked = !equipCheck.ok;
+      let label = eqMeta ? ('当前：' + eqMeta.emoji + ' ' + eqMeta.name) : '当前：未装备';
+      if (blocked && equipCheck.reason === '已充气') label = '已充气';
       const selected = state.equipSelectedLevelIdx === idx;
 
       ctx.save();
       roundRect(ctx, mx + px, ry, rowInnerW, rowH - 6, 12);
-      ctx.fillStyle = selected ? 'rgba(255,215,0,0.14)' : (eqId === bId ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.05)');
+      ctx.fillStyle = selected ? 'rgba(255,215,0,0.14)' : (blocked ? 'rgba(255,255,255,0.03)' : (eqId === bId ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.05)'));
       ctx.fill();
-      ctx.strokeStyle = selected ? 'rgba(252,211,77,0.55)' : 'rgba(255,255,255,0.12)';
+      ctx.strokeStyle = selected ? 'rgba(252,211,77,0.55)' : (blocked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)');
       ctx.lineWidth = selected ? 1.5 : 1;
       ctx.stroke();
       ctx.restore();
@@ -761,9 +779,10 @@ const sceneApi = {
 
       const labelDisp = _truncateEquipTitle(ctx, label, TYPE.modalSub, rightColW - 4, 400);
       const rightX = mx + px + rowInnerW - 8;
-      drawText(ctx, labelDisp, rightX, ryc, 'rgba(255,255,255,0.5)', TYPE.modalSub, 'right', undefined, 400);
+      const labelCol = blocked && equipCheck.reason === '已充气' ? 'rgba(255,152,0,0.8)' : 'rgba(255,255,255,0.5)';
+      drawText(ctx, labelDisp, rightX, ryc, labelCol, TYPE.modalSub, 'right', undefined, 400);
 
-      scene.manager.addTouchable(mx + px, ry, rowInnerW, rowH - 6, 'setEquipSelectedLevel', idx);
+      if (!blocked) scene.manager.addTouchable(mx + px, ry, rowInnerW, rowH - 6, 'setEquipSelectedLevel', idx);
     });
 
     const cb = drawButtonGradient(ctx, mx + px, my + mh - py - btnH, mw - px * 2, btnH, '完成', 'rgba(255,255,255,0.1)', 'rgba(255,255,255,0.88)', TYPE.button, 12, undefined, 500);
@@ -787,7 +806,7 @@ const sceneApi = {
     const my = _modalTop(H, mh);
     _drawCollectionModalBg(ctx, mx, my, mw, mh, COLLECTION_UI.modalBorderViolet, 18);
     drawText(ctx, '确认合成气球束？', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
-    drawWrappedText(ctx, '将消耗 2 个「' + meta.name + '」合成专属气球束，操作不可撤销。', mx + px, my + py + titleH + gap, mw - px * 2, 19, 'rgba(255,255,255,0.72)', TYPE.modalBody, 400);
+    drawWrappedText(ctx, '将消耗 2 个「' + meta.name + '」合成专属气球束，操作不可撤销。', mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', TYPE.button, 12, undefined, 500);
@@ -813,7 +832,7 @@ const sceneApi = {
     const my = _modalTop(H, mh);
     _drawCollectionModalBg(ctx, mx, my, mw, mh, 'rgba(134,239,172,0.32)', 18);
     drawText(ctx, '确认发起赠送？', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
-    drawWrappedText(ctx, '「' + meta.name + '」将进入冻结状态（24 小时内有效），请通过右上角菜单分享给好友领取。', mx + px, my + py + titleH + gap, mw - px * 2, 19, 'rgba(255,255,255,0.72)', TYPE.modalBody, 400);
+    drawWrappedText(ctx, '「' + meta.name + '」将进入冻结状态（24 小时内有效），请通过右上角菜单分享给好友领取。', mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', TYPE.button, 12, undefined, 500);
@@ -839,7 +858,7 @@ const sceneApi = {
     const my = _modalTop(H, mh);
     _drawCollectionModalBg(ctx, mx, my, mw, mh, COLLECTION_UI.modalBorderGold, 18);
     drawText(ctx, '确认购买（演示）', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
-    drawWrappedText(ctx, '此为本地演示流程，未接入真实支付。购买后将获得 1 个「' + meta.name + '」。', mx + px, my + py + titleH + gap, mw - px * 2, 19, 'rgba(255,255,255,0.72)', TYPE.modalBody, 400);
+    drawWrappedText(ctx, '此为本地演示流程，未接入真实支付。购买后将获得 1 个「' + meta.name + '」。', mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', TYPE.button, 12, undefined, 500);
@@ -852,15 +871,17 @@ const sceneApi = {
     const scene = this;
     const b = state.bouquets.find(x => x.sn === state.previewBouquetSn);
     if (!b) return;
-    const mw = W - 64;
-    const mx = 32;
-    const py = 18;
-    const px = 16;
+    // 弹窗略窄、花束区略矮，比例接近列表缩略图，避免「铺满屏」显得笨重
+    const mw = Math.min(W - 72, 304);
+    const mx = (W - mw) / 2;
+    const py = 16;
+    const px = 14;
     const titleH = 20;
-    const gap = 8;
-    const bodyH = 208;
-    const btnH = 42;
-    const mh = py + titleH + gap + bodyH + gap + btnH + py;
+    const gap = 6;
+    const metaH = 36;
+    const bodyH = 132;
+    const btnH = 40;
+    const mh = py + titleH + gap + metaH + bodyH + gap + btnH + py;
     const my = _modalTop(H, mh);
     _drawCollectionModalBg(ctx, mx, my, mw, mh, COLLECTION_UI.previewStroke, 18);
     drawText(ctx, '✕', mx + mw - 18, my + py + 4, 'rgba(255,255,255,0.45)', TYPE.close, 'center');
@@ -868,9 +889,9 @@ const sceneApi = {
     const title = b.isSynthesized ? '传奇合成气球束' : ('第' + b.level + '关 气球束');
     drawText(ctx, title, W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
     const sub = (b.time || '') + ' · ' + (b.hasLegend ? '含传奇' : '普通') + (b.starred ? ' · 已标星' : '');
-    drawWrappedText(ctx, sub, mx + px, my + py + titleH + gap, mw - px * 2, 18, 'rgba(255,255,255,0.55)', TYPE.modalSub, 400);
-    const bqY = my + py + titleH + gap + 36;
-    const bqH = bodyH - 36;
+    drawWrappedText(ctx, sub, mx + px, my + py + titleH + gap, mw - px * 2, 18, 'rgba(255,255,255,0.72)', TYPE.modalSub, 400);
+    const bqY = my + py + titleH + gap + metaH;
+    const bqH = bodyH;
     ctx.save();
     roundRect(ctx, mx + px, bqY, mw - px * 2, bqH, 14);
     ctx.fillStyle = 'rgba(6,4,18,0.55)';
@@ -965,14 +986,27 @@ const sceneApi = {
       showToast('未拥有该气球');
       return;
     }
+    if (b.legendInflated) {
+      showToast('已充气');
+      return;
+    }
     state.showDetail = false;
     state.selected = null;
-    let pick = 0;
+    let pick = -1;
     for (let i = 0; i < LEVELS.length; i++) {
       if (store.getEquippedLegend(LEVELS[i].id - 1) === id) {
         pick = i;
         break;
       }
+    }
+    if (pick < 0) {
+      for (let i = 0; i < LEVELS.length; i++) {
+        if (store.canEquipLegend(i, id).ok) { pick = i; break; }
+      }
+    }
+    if (pick < 0) {
+      showToast('已充气');
+      return;
     }
     state.equipSelectedLevelIdx = pick;
     state.equipBalloonId = id;
@@ -1020,7 +1054,7 @@ const sceneApi = {
       sourceBalloonId: id,
       sourceBalloonName: b.name,
       sourceBalloonEmoji: b.emoji,
-      originalBalloons: [{ shape: b.shape, color: b.color, glowColor: b.glowColor, isPaid: true }]
+      originalBalloons: [{ emoji: b.emoji, shape: b.shape, color: b.color, glowColor: b.glowColor, isPaid: true }]
     });
     store.addTransaction({ type: 'synthesize', balloonId: id, quantity: -2, counterparty: '', status: 'success' });
     showToast('合成成功！已存入气球束');
@@ -1095,12 +1129,29 @@ const sceneApi = {
       this.cancelPurchase();
       return;
     }
-    store.addBalloon(id, 1, 'purchase');
-    store.addTransaction({ type: 'purchase', balloonId: id, quantity: 1, counterparty: '', status: 'success' });
-    showToast('购买成功（演示）');
-    state.showPurchaseConfirm = false;
-    state.pendingPurchaseId = null;
-    this._refresh();
+    const scene = this;
+    showToast('支付处理中…');
+    purchaseLegendBalloon(id, { meta: b, priceYuan: 1.99 })
+      .then((payResult) => {
+        const channel = payResult.channel || 'mock_pay';
+        store.addBalloon(id, 1, 'purchase');
+        store.addTransaction({
+          type: 'purchase',
+          balloonId: id,
+          quantity: 1,
+          counterparty: '',
+          status: 'success',
+          channel
+        });
+        showToast(channel === 'cloud_pay' ? '购买成功' : '购买成功（演示）');
+        state.showPurchaseConfirm = false;
+        state.pendingPurchaseId = null;
+        scene._refresh();
+      })
+      .catch((err) => {
+        console.warn('[collection.confirmPurchase]', err);
+        showToast((err && err.message) || '支付失败');
+      });
   },
 
   setEquipSelectedLevel(levelIndex) {
@@ -1118,6 +1169,11 @@ const sceneApi = {
     const idx = state.equipSelectedLevelIdx;
     if (idx < 0 || idx >= LEVELS.length) {
       showToast('请选择关卡');
+      return;
+    }
+    const check = store.canEquipLegend(idx, bId);
+    if (!check.ok) {
+      showToast(check.reason || '装备失败');
       return;
     }
     const ok = store.equipLegend(idx, bId);

@@ -56,7 +56,9 @@ const PROFILE_IMG = {
   actionKefu:     'images/ui/kefu.png',     // ⚠️ 资源待补：缺图时自动回落到 emoji
   actionXieyi:    'images/ui/xieyi.png',
   actionYinsi:    'images/ui/yinsi.png',
-  actionTuichu:   'images/ui/tuichu.png'
+  actionTuichu:   'images/ui/tuichu.png',
+  recordJilu:     'images/ui/jilu.png',
+  recordShijian:  'images/ui/shijian.png'
 };
 
 let state = {
@@ -101,6 +103,14 @@ function _shortId(id) {
   const s = String(id || '88888888');
   if (s.length <= 8) return s;
   return s.slice(0, 8);
+}
+
+function _formatDurationMs(ms) {
+  const s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  if (m <= 0) return sec + '秒';
+  return m + '分' + sec + '秒';
 }
 
 function _truncateText(ctx, text, size, weight, maxW) {
@@ -192,8 +202,10 @@ function _drawAvatar(ctx, x, y, r, name, avatar) {
 function _drawStatBox(ctx, x, y, w, h, stat, compact) {
   _drawGlowCard(ctx, x, y, w, h, compact ? 18 : 16, stat.clickable ? 'rgba(255,80,200,0.22)' : UI.strokeSoft, UI.panel2);
   const iconSize = compact ? 24 : 32;
-  const iconX = compact ? x + w / 2 : x + 24;
-  const iconY = compact ? y + 18 : y + h / 2;
+  // 顶部两格通关统计：图标相对卡片左缘再右移 16px
+  const iconX = compact ? x + w / 2 : x + 40;
+  // 下方三格紧凑统计：图标下移 8px，更贴近数值
+  const iconY = compact ? y + 26 : y + h / 2;
   const img = stat.iconImg ? getImage(stat.iconImg) : null;
   if (img) {
     drawImage(ctx, stat.iconImg, iconX - iconSize / 2, iconY - iconSize / 2, iconSize, iconSize);
@@ -214,7 +226,7 @@ function _drawStatBox(ctx, x, y, w, h, stat, compact) {
     return;
   }
 
-  const tx = x + 48;
+  const tx = x + 64;
   drawText(ctx, stat.value, tx, y + 30, stat.color, TYPE.statValue, 'left', stat.glow, 800);
   drawText(ctx, stat.unit, tx + 22, y + 32, UI.muted, TYPE.statUnit, 'left', undefined, 400);
   drawText(ctx, stat.label, tx, y + 54, UI.muted, TYPE.statLabel, 'left', undefined, 400);
@@ -264,8 +276,7 @@ module.exports = {
     const settings = store.getSettings();
     const team = store.getTeam();
     const owned = store.getOwnedBalloons();
-    const records = store.getClearHistory ? store.getClearHistory() : [];
-    const today = _todayStr();
+    const fullRecords = store.getFullClearRunHistory ? store.getFullClearRunHistory() : [];
     const normalCollected = Object.keys(owned).filter(id => {
       const b = BALLOON_TYPES.find(t => t.id === id);
       return b && !b.isPaid && owned[id].quantity > 0;
@@ -279,8 +290,8 @@ module.exports = {
       userAvatar: user.avatar || '',
       userNickName: user.nickName || '糖果小仙女',
       userId: user.openid || '',
-      totalClears: records.length,
-      todayClears: records.filter(r => String(r.time || '').slice(0, 10) === today).length || (store.getTodayClears ? store.getTodayClears() : 0),
+      totalClears: fullRecords.length,
+      todayClears: store.getTodayClears ? store.getTodayClears() : 0,
       normalCollected,
       legendCollected,
       bouquetCount: store.getBouquets ? store.getBouquets().length : 0,
@@ -288,7 +299,7 @@ module.exports = {
       hasTeam: !!team,
       soundOn: settings.soundOn !== false,
       vibrationOn: settings.vibrationOn !== false,
-      records
+      records: fullRecords
     });
 
     if (state.userAvatar) {
@@ -460,31 +471,81 @@ module.exports = {
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
     ctx.fill();
     ctx.restore();
-    drawText(ctx, '↺', mx + 32, my + 52, UI.neon, 18, 'center', undefined, 600);
-    drawText(ctx, '通关记录', mx + 56, my + 52, UI.text, TYPE.modalTitle, 'left', undefined, 700);
+
+    const iconJilu = getImage(PROFILE_IMG.recordJilu);
+    const iconSz = 28;
+    if (iconJilu) {
+      drawImage(ctx, PROFILE_IMG.recordJilu, mx + 20, my + 38, iconSz, iconSz);
+    } else {
+      drawText(ctx, '📋', mx + 34, my + 52, UI.neon, 18, 'center', undefined, 600);
+    }
+    drawText(ctx, '通关记录', mx + 54, my + 52, UI.text, TYPE.modalTitle, 'left', undefined, 700);
     _drawGlowCard(ctx, mx + mw - 88, my + 38, 66, 28, 14, 'rgba(255,80,200,0.30)', 'rgba(255,80,200,0.14)');
     drawText(ctx, '共 ' + state.records.length + ' 次', mx + mw - 55, my + 52, UI.neon, 11, 'center', undefined, 700);
-    drawText(ctx, '4 关全部通过才算一次完整通关', mx + 24, my + 82, UI.muted, TYPE.modalSmall, 'left', undefined, 400);
+    drawText(ctx, '四关全部通过计为 1 次；卡片展示通关时间与用时', mx + 24, my + 82, UI.muted, TYPE.modalSmall, 'left', undefined, 400);
 
-    const list = state.records.slice(0, 7);
-    let y = my + 110;
+    const list = state.records.slice(0, 12);
+    let y = my + 108;
+    const iconShijian = getImage(PROFILE_IMG.recordShijian);
     if (!list.length) {
-      drawText(ctx, '暂无通关记录', W / 2, my + sheetH / 2, UI.dim, TYPE.modalBody, 'center', undefined, 400);
+      drawText(ctx, '暂无完整通关记录', W / 2, my + sheetH / 2, UI.dim, TYPE.modalBody, 'center', undefined, 400);
     }
     list.forEach((r, i) => {
-      const h = 64;
-      _drawGlowCard(ctx, mx + 14, y, mw - 28, h, 16, i === 0 ? 'rgba(255,80,200,0.28)' : UI.strokeSoft, i === 0 ? 'rgba(255,80,200,0.10)' : UI.panel);
+      const h = 74;
+      const isFirst = i === 0;
+      _drawGlowCard(ctx, mx + 14, y, mw - 28, h, 16, isFirst ? 'rgba(255,80,200,0.32)' : UI.strokeSoft, isFirst ? 'rgba(255,80,200,0.10)' : UI.panel);
+
       ctx.save();
       ctx.beginPath();
       ctx.arc(mx + 38, y + h / 2, 16, 0, Math.PI * 2);
-      ctx.fillStyle = i === 0 ? 'rgba(255,80,200,0.18)' : 'rgba(255,255,255,0.06)';
+      ctx.fillStyle = isFirst ? 'rgba(255,80,200,0.22)' : 'rgba(255,255,255,0.06)';
       ctx.fill();
       ctx.restore();
-      drawText(ctx, String(i + 1), mx + 38, y + h / 2, i === 0 ? UI.neon : UI.muted, 11, 'center', undefined, 800);
-      const time = r.time || '';
-      drawText(ctx, time ? time.slice(0, 16) : '未知时间', mx + 64, y + 24, UI.text, 13, 'left', undefined, 600);
-      drawText(ctx, '第' + (r.level || '-') + '关' + (r.hasLegend ? ' · 含传奇' : ''), mx + 64, y + 45, UI.muted, 11, 'left', undefined, 400);
-      drawText(ctx, '🏆', mx + mw - 42, y + h / 2, i === 0 ? UI.gold : 'rgba(255,215,64,0.35)', 17, 'center');
+      drawText(ctx, String(i + 1), mx + 38, y + h / 2, isFirst ? UI.neon : UI.muted, 11, 'center', undefined, 800);
+
+      const timeStr = String(r.time || '').replace('T', ' ').slice(0, 16) || '未知时间';
+      const tx = mx + 64;
+      drawText(ctx, timeStr, tx, y + 26, UI.text, 13, 'left', undefined, 600);
+      if (isFirst) {
+        const tw = measureText(ctx, timeStr, 13, 600);
+        const pillX = tx + tw + 8;
+        const pillY = y + 14;
+        const pillW = 40;
+        const pillH = 22;
+        ctx.save();
+        roundRect(ctx, pillX, pillY, pillW, pillH, 11);
+        ctx.fillStyle = 'rgba(40,12,55,0.95)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,80,200,0.45)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+        drawText(ctx, '最近', pillX + pillW / 2, pillY + pillH / 2, UI.neon, 11, 'center', undefined, 700);
+      }
+
+      const durLabel = (r.durationMs > 0 ? _formatDurationMs(r.durationMs) : '—');
+      const line2Y = y + 50;
+      const clockSz = 16;
+      const cx0 = tx;
+      if (iconShijian) {
+        drawImage(ctx, PROFILE_IMG.recordShijian, cx0, line2Y - clockSz / 2, clockSz, clockSz);
+      } else {
+        drawText(ctx, '⏱', cx0 + 8, line2Y, UI.muted, 13, 'center', undefined, 500);
+      }
+      drawText(ctx, '用时 ' + durLabel, cx0 + clockSz + 6, line2Y, UI.muted, 12, 'left', undefined, 400);
+
+      const stamp = 26;
+      const stampX = mx + mw - 14 - stamp;
+      const stampY = y + (h - stamp) / 2;
+      ctx.save();
+      if (!isFirst) ctx.globalAlpha = 0.42;
+      if (iconJilu) {
+        drawImage(ctx, PROFILE_IMG.recordJilu, stampX, stampY, stamp, stamp);
+      } else {
+        drawText(ctx, '🏆', stampX + stamp / 2, stampY + stamp / 2, isFirst ? UI.gold : UI.muted, 18, 'center', undefined, 600);
+      }
+      ctx.restore();
+
       y += h + 10;
     });
     this.manager.addTouchable(0, 0, W, H, 'closeTopModal');
@@ -507,7 +568,7 @@ module.exports = {
     ctx.restore();
     drawText(ctx, '⇱', W / 2, my + 58, UI.danger, 24, 'center', undefined, 600);
     drawText(ctx, '确认退出登录？', W / 2, my + 108, UI.text, TYPE.modalTitle, 'center', undefined, 800);
-    drawWrappedText(ctx, '退出后将清除当前登录信息，本机数据仍会保留，下次进入需要重新授权登录。', mx + 28, my + 132, mw - 56, 19, UI.muted, TYPE.modalBody, 400);
+    drawWrappedText(ctx, '下次进入需要重新授权登录，确定退出游戏？', mx + 28, my + 132, mw - 56, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
     const btnW = (mw - 58) / 2;
     const by = my + mh - 62;
     const cancel = drawButtonGradient(ctx, mx + 22, by, btnW, 42, '再想想', 'rgba(255,255,255,0.07)', 'rgba(255,255,255,0.55)', TYPE.button, 14, undefined, 600);
@@ -533,7 +594,10 @@ module.exports = {
     state.showExitConfirm = false;
     state.showAbout = false;
   },
-  openRecords() { state.showRecordsModal = true; },
+  openRecords() {
+    state.showRecordsModal = true;
+    this._refresh();
+  },
   openExitConfirm() { state.showExitConfirm = true; },
   cancelExit() { state.showExitConfirm = false; },
   confirmExit() {

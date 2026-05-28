@@ -3,17 +3,21 @@
 //   1. 顶部「充气挑战」标题栏 + 单一「本关进度」大卡片（含进度格）
 //   2. 进度小方框 cardShrink=8、cardGap=12、panelInnerPadY=10；小气球在方框中居中
 //   3. 仪表盘 +30% 放大，gaugeCY 距底部安全区 32+ 距离
-//   4. 圆形按钮 hit-test、tip「按住圆形按钮充气哦」、置灰态再次唤起失败弹窗
+//   4. 圆形按钮 hit-test、tip「按住圆形按钮充气哦」；失败先出原文案弹窗，取消后置灰，再点圆形出「继续挑战」
 //   5. 「充气过头」改为「气球炸了！」，失败弹窗参考完美充气紫红主题
 //   6. 完美充气改为绿色矢量气球 + 大按钮 + 进度圆点同行计数
 //   7. 全局弹窗左右各 40（宽 W-80）；标题 ≤18 / 正文与按钮 14 / 辅助 12
 //   8. 重开 toast 统一 90% 不透明 / 14px
-const { drawBackground, drawText, drawButton, drawButtonGradient, drawImage, getImage, loadImages, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, LEVEL_BG, beginScrollView, endScrollView, drawWrappedText, drawModalBackground, drawToggle } = require('../engine/canvas-ui');
-const { drawBalloon, drawBalloonShape, spawnExplosion, resetParticles, getBalloonCenter } = require('../engine/balloon-renderer');
+const { drawText, drawButton, drawButtonGradient, drawImage, getImage, loadImages, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, beginScrollView, endScrollView, drawWrappedText, drawModalBackground, drawToggle } = require('../engine/canvas-ui');
+const { drawBattleAmbient } = require('../engine/battle-ambient');
+const { pathsFor, isSoundOn } = require('../audio');
+const { drawBalloon, drawBalloonShape, drawExplosionBurst, spawnExplosion, resetParticles, getBalloonCenter } = require('../engine/balloon-renderer');
 const { drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 const { drawGauge } = require('../engine/gauge-renderer');
 const { getCapsuleLayout } = require('../layout-safe');
 const store = require('../store');
+const { purchaseLegendBalloon } = require('../cloud-pay');
+const { readIOS } = require('../platform');
 const { LEVELS, BALLOON_TYPES } = require('../balloons');
 const { getSequence } = require('../emoji-sequences');
 
@@ -21,6 +25,16 @@ const AD_RESTART_GRANT = 2;
 const MAX_CUMULATIVE_RETRIES = 5;
 /** 传奇气球单价（元） */
 const LEGEND_PRICE_YUAN = 1.99;
+
+/** 二次确认弹窗正文统一：14px / 行距 20 / 常规字重 */
+const CONFIRM_BODY = { fs: 14, lh: 20, color: 'rgba(255,255,255,0.88)', fw: 400 };
+const AUDIO_SRC = {
+  pump: pathsFor('pump'),
+  explode: pathsFor('explode'),
+  louqi: pathsFor('louqi'),
+  mofa: pathsFor('mofa'),
+  chenggong: pathsFor('chenggong')
+};
 
 function _paidBalloonTypesOrdered() {
   const list = BALLOON_TYPES.filter(b => b.isPaid);
@@ -35,22 +49,45 @@ function _paidBalloonTypesOrdered() {
   });
 }
 
+/** 第十格未装备时轮播展示的传奇预览（按关卡稳定取一只） */
+function _legendShowcaseForLevel(levelIdx) {
+  const paid = BALLOON_TYPES.filter(b => b.isPaid);
+  if (!paid.length) return { emoji: '👑', name: '传奇气球' };
+  return paid[Math.abs(levelIdx) % paid.length];
+}
+
+function _normalizeBouquetBalloon(item) {
+  const meta = item && item.balloonId ? BALLOON_TYPES.find(b => b.id === item.balloonId) : null;
+  if (!meta) return item || {};
+  return Object.assign({}, item, {
+    emoji: item.emoji || meta.emoji,
+    shape: item.shape || meta.shape,
+    color: item.color || meta.color,
+    glowColor: item.glowColor || meta.glowColor
+  });
+}
+
 let state = {
   currentLevelIdx: 0, level: LEVELS[0], bgKey: 'candy',
   pressure: 0, isHolding: false, gameState: 'idle', isGameActive: true,
   isExploding: false, flashWhite: false,
   isPerfect: false,
   balloonInLevel: 0, completedInLevel: 0, completedBalloonsList: [],
-  currentColor: '#ff6eb4', currentGlow: '#ff6eb4', currentShape: 'round',
-  restartChances: 3, failCount: 0, failTitle: '', failDesc: '', failChoiceMode: 'hasRestart', failReason: 'low',
+  currentColor: '#ff6eb4', currentGlow: '#ff6eb4', currentShape: 'round', currentEmoji: '🎈',
+  restartChances: 3, failCount: 0, failTitle: '', failDesc: '', failSamplePressure: null, failChoiceMode: 'hasRestart', failReason: 'low',
   showLevelComplete: false, levelBonusPts: 0,
   showSettings: false, soundOn: true, showLegendSelect: false, legendBalloons: [],
   showLegendPayConfirm: false, legendPayBalloonId: null,
   legendSelectScrollY: 0,
   _legendSelectDrag: null,
+  showLegendSlotChoice: false, legendSlot10ChoiceDone: false, legendSlot10OpenedPurchase: false,
+  /** 第十格弹窗：purchase=无可用传奇；owned=已有可装备传奇 */
+  legendSlot10Mode: 'purchase',
+  legendSlot10AutoEquipId: null,
   showAbandonConfirm: false, showResetChallengeConfirm: false, showSharePreview: false, showTutorial: false, tutorialStep: 0,
   showPrivacy: false, showAdRestartModal: false, adRestartModalContent: '',
   failHelpOpen: false,
+  failFresh: false,
   showRestartDoneToast: false, restartDoneToastRemain: 0, toastTimer: null,
   time: 0, gaugeHidden: false, paidBalloonUsed: false,
   shareTextIndex: 0, bouquetReady: false,
@@ -61,13 +98,12 @@ let state = {
   pumpTipTimer: null
 };
 
-function getLevelBg(background) { return LEVEL_BG[background] || LEVEL_BG.candy; }
 
 module.exports = {
 
   onShow(data) {
     const settings = store.getSettings();
-    state.soundOn = settings.soundOn;
+    state.soundOn = settings.soundOn !== false;
 
     const user = store.getUser();
     const firstTime = !!user.isFirstTime;
@@ -80,6 +116,9 @@ module.exports = {
     // 进场就提前创建两个音频实例，开始后台加载，首次按下不丢首声
     this._ensurePumpAudio();
     this._ensureExplodeAudio();
+    this._ensureOneShotBattleAudio('louqi');
+    this._ensureOneShotBattleAudio('mofa');
+    this._ensureOneShotBattleAudio('chenggong');
 
     this._initLevel();
 
@@ -103,6 +142,7 @@ module.exports = {
   __debugApplyLevelCompleteModal() {
     const seq = getSequence(state.level.id);
     state.completedBalloonsList = seq.slice(0, 10).map((item, i) => ({
+      emoji: item.emoji,
       shape: item.shape,
       color: item.color,
       glowColor: item.glowColor,
@@ -118,12 +158,18 @@ module.exports = {
     state.showSettings = false;
     state.showLegendSelect = false;
     state.showLegendPayConfirm = false;
+    state.showLegendSlotChoice = false;
+    state.legendSlot10ChoiceDone = false;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
     state.showAbandonConfirm = false;
     state.showSharePreview = false;
     state.showPrivacy = false;
     state.showAdRestartModal = false;
     state.pumpDisabled = false;
     state.bouquetAnimStartMs = Date.now();
+    this._playOneShotBattleAudio('mofa', 48);
     try { console.log('[debug] Level complete modal'); } catch (_) {}
   },
 
@@ -131,6 +177,22 @@ module.exports = {
     if (state.toastTimer) { clearTimeout(state.toastTimer); state.toastTimer = null; }
     if (this._pumpTimer) { clearInterval(this._pumpTimer); this._pumpTimer = null; }
     if (state.pumpTipTimer) { clearTimeout(state.pumpTipTimer); state.pumpTipTimer = null; }
+    if (this._explosionSoundTimer) {
+      try { clearTimeout(this._explosionSoundTimer); } catch (_) {}
+      this._explosionSoundTimer = null;
+    }
+    if (this._louqiSoundTimer) {
+      try { clearTimeout(this._louqiSoundTimer); } catch (_) {}
+      this._louqiSoundTimer = null;
+    }
+    if (this._mofaSoundTimer) {
+      try { clearTimeout(this._mofaSoundTimer); } catch (_) {}
+      this._mofaSoundTimer = null;
+    }
+    if (this._chenggongSoundTimer) {
+      try { clearTimeout(this._chenggongSoundTimer); } catch (_) {}
+      this._chenggongSoundTimer = null;
+    }
     state.isHolding = false;
     state.showPumpTip = false;
     this._stopPumpAudio();
@@ -148,6 +210,7 @@ module.exports = {
     state.currentLevelIdx = levelIdx;
     state.restartChances = retries;
     state.paidBalloonUsed = !!equippedId;
+    store.validateEquippedLegends();
     this._syncDerived({ currentLevelIdx: levelIdx });
     state.pressure = 0; state.isHolding = false; state.gameState = 'idle';
     state.isGameActive = true; state.isExploding = false; state.flashWhite = false;
@@ -156,7 +219,14 @@ module.exports = {
     state.showLegendSelect = false; state.showTutorial = false;
     state.showAbandonConfirm = false; state.showResetChallengeConfirm = false; state.showSharePreview = false;
     state.showAdRestartModal = false;
+    state.showLegendSlotChoice = false;
+    state.legendSlot10ChoiceDone = false;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
     state.pumpDisabled = false;
+    state.failFresh = false;
+    state.failSamplePressure = null;
     state.showPumpTip = false;
     if (state.pumpTipTimer) { clearTimeout(state.pumpTipTimer); state.pumpTipTimer = null; }
   },
@@ -167,26 +237,29 @@ module.exports = {
     const bg = lv.background || 'candy';
     const seq = getSequence(lv.id);
     const balloonIdx = state.balloonInLevel;
-    const currentSeqItem = seq[balloonIdx] || seq[0];
+    const equippedId = balloonIdx === 9 ? store.getEquippedLegend(idx) : '';
+    const equippedMeta = equippedId ? BALLOON_TYPES.find(b => b.id === equippedId) : null;
+    const currentSeqItem = equippedMeta || seq[balloonIdx] || seq[0];
 
     state.level = lv;
     state.bgKey = bg;
     state.currentColor = currentSeqItem.color;
     state.currentGlow = currentSeqItem.glowColor;
     state.currentShape = currentSeqItem.shape;
+    state.currentEmoji = currentSeqItem.emoji || '🎈';
     state.gaugeHidden = (bg === 'temple' && state.gameState === 'playing');
   },
 
   _refreshFlags() {
     return {
-      disabledHold: !state.isGameActive || state.gameState === 'success' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal,
-      maskNative: state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal
+      disabledHold: !state.isGameActive || state.gameState === 'success' || state.showLevelComplete || state.showSettings || state.showLegendSlotChoice || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal,
+      maskNative: state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSlotChoice || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal
     };
   },
 
   // 任意会挡住「按住充气」交互的弹窗 / 提示是否在场
   _anyModalBlockingPumpTip() {
-    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || state.showPrivacy || state.failHelpOpen);
+    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSlotChoice || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || state.showPrivacy || state.failHelpOpen);
   },
 
   /** 是否绘制全屏黑蒙层（仅弹窗，不含会自动消失的 toast） */
@@ -205,8 +278,7 @@ module.exports = {
   // ─── Render ──────────────────────────────────────
   render(ctx, W, H) {
     state.time += 0.04;
-    const bg = getLevelBg(state.bgKey);
-    drawBackground(ctx, W, H, bg);
+    drawBattleAmbient(ctx, W, H, state.bgKey, state.time);
     const flags = this._refreshFlags();
     const UI = this;
     const L = getCapsuleLayout();
@@ -251,7 +323,7 @@ module.exports = {
     ctx.strokeStyle = 'rgba(255,80,200,0.22)'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.restore();
 
-    // 头部：本关进度 / 重开次数 / 传奇 —— 左右与小卡片区严格对齐
+    // 头部：本关进度 / 重开次数 / 进度 pill —— 左右与小卡片区严格对齐
     const cardsLeft = cardPad;
     const cardsRight = cardPad + cardCount * cardSize + (cardCount - 1) * cardGap;
     const cardsCenterX = (cardsLeft + cardsRight) / 2;
@@ -260,8 +332,8 @@ module.exports = {
     drawText(ctx, '本关进度', cardsLeft, headerCY, '#ffffff', 14, 'left', undefined, 700);
     drawText(ctx, '重开次数 ' + state.restartChances, cardsCenterX, headerCY, 'rgba(255,255,255,0.7)', 12, 'center', undefined, 500);
 
-    // 传奇 pill（右边沿对齐卡片右沿）
-    const pillText = '✦ 传奇 ' + state.completedInLevel + '/10';
+    // 本关进度 pill（右边沿对齐卡片右沿）
+    const pillText = '✦ ' + state.completedInLevel + '/10';
     const pillTW = measureText(ctx, pillText, 12, 600);
     const pillW = Math.max(72, Math.ceil(pillTW + 22));
     const pillX = cardsRight - pillW;
@@ -274,14 +346,14 @@ module.exports = {
     ctx.strokeStyle = 'rgba(255,215,0,0.45)'; ctx.lineWidth = 1.2; ctx.stroke();
     ctx.restore();
     drawText(ctx, pillText, pillX + pillW / 2, pillY + 13, '#ffd740', 12, 'center', undefined, 600);
-    UI.manager.addTouchable(pillX, pillY, pillW, 26, 'openLegendSelect');
+    if (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone) {
+      UI.manager.addTouchable(pillX, pillY, pillW, 26, 'openLegendSelect');
+    }
 
     // ─── 进度方格（2×5） ────────────────────
     const slots = this._buildSlots();
     const row1Y = headerY + headerH + panelGap;   // 标题↔卡片 = panelGap
     const row2Y = row1Y + cardSize + cardGap;
-    const miniR = cardSize * 0.22;
-
     [0, 1].forEach(row => {
       const rowY = row === 0 ? row1Y : row2Y;
       const rowSlots = slots.slice(row * cardCount, (row + 1) * cardCount);
@@ -326,27 +398,25 @@ module.exports = {
         }
         ctx.restore();
 
-        // 小气球居中（不再向下偏移）
-        if (s.isPaid && s.isBought) {
+        // 进度格 emoji；第十格未装备传奇时默认球与预览传奇轮播
+        const emojiFs = Math.max(20, cardSize * 0.42);
+        const baseAlpha = s.status === 'empty' ? 0.35 : 1;
+        if (s.carouselDefault && s.carouselLegend) {
+          const phase = (Math.sin(state.time * 2.6) + 1) / 2;
           ctx.save();
-          ctx.globalAlpha = s.status === 'empty' ? 0.45 : 1;
-          drawBalloonShape(ctx, 'crown', cx, cy, miniR,
-            '#ffd700', '#ffab00', 0, 50, false, state.time, this.dpr, true);
+          ctx.globalAlpha = baseAlpha * (1 - phase);
+          drawText(ctx, s.carouselDefault.emoji || '🔶', cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
+          ctx.globalAlpha = baseAlpha * phase;
+          drawText(ctx, s.carouselLegend.emoji || '👑', cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
           ctx.restore();
-        } else if (s.isPaid) {
+        } else {
           ctx.save();
-          ctx.globalAlpha = s.status === 'empty' ? 0.35 : 1;
-          drawBalloonShape(ctx, s.shape || 'round', cx, cy, miniR,
-            s.color || '#ff6eb4', s.glowColor || '#ff6eb4', 0, 50, false, state.time, this.dpr, true);
+          ctx.globalAlpha = baseAlpha;
+          drawText(ctx, s.emoji || (s.isPaid ? '🔶' : '🎈'), cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
           ctx.restore();
-          if (s.status !== 'done') {
-            const ghostAlpha = (Math.sin(state.time * 1.6) * 0.5 + 0.5) * 0.45;
-            ctx.save();
-            ctx.globalAlpha = ghostAlpha;
-            drawBalloonShape(ctx, 'crown', cx, cy, miniR,
-              '#ffd700', '#ffab00', 0, 50, false, state.time, this.dpr, true);
-            ctx.restore();
-          }
+        }
+
+        if (s.isPaid) {
           const badgeR = cardSize * 0.16;
           const bx = cx + cardSize / 2 - badgeR * 0.6;
           const by = rowY + badgeR * 0.6;
@@ -364,35 +434,31 @@ module.exports = {
           } else {
             drawText(ctx, '👑', bx, by, '#fff', badgeR * 1.2, 'center');
           }
-          UI.manager.addTouchable(cx - cardSize / 2, rowY, cardSize, cardSize, 'openLegendSelect');
-        } else {
-          ctx.save();
-          ctx.globalAlpha = s.status === 'empty' ? 0.35 : 1;
-          drawBalloonShape(ctx, s.shape || 'round', cx, cy, miniR,
-            s.color || '#ff6eb4', s.glowColor || '#ff6eb4', 0, 50, false, state.time, this.dpr, true);
-          ctx.restore();
+          if (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone) {
+            UI.manager.addTouchable(cx - cardSize / 2, rowY, cardSize, cardSize, 'openLegendSelect');
+          }
         }
       });
     });
 
-    // 传奇购买提示
+    // 传奇购买提示（第十格前提示；第十格用轮播 + 弹窗引导）
     const panelBottom = panelTop + panelH;
     let belowY = panelBottom + 8;
-    const hintH = state.paidBalloonUsed ? 0 : 18;
-    if (!state.paidBalloonUsed) {
+    const hintH = (state.paidBalloonUsed || state.balloonInLevel >= 9) ? 0 : 18;
+    if (!state.paidBalloonUsed && state.balloonInLevel < 9) {
       drawText(ctx, '可以购买传奇气球替换第十个气球', W / 2,
         belowY + 6, 'rgba(255,255,255,0.7)', 12, 'center');
       UI.manager.addTouchable(W / 2 - 110, belowY - 4, 220, 22, 'openLegendSelect');
       belowY += hintH + 6;
     }
 
-    // ─── 仪表盘 / 圆形按钮（+30% 放大、距底部安全区） ──
+    // ─── 仪表盘 / 圆形按钮（约 +20% 尺寸，更贴近底边） ──
     const safeBottom = (L.safeBottomInset || 0);
-    const padBelowArc = Math.max(32, safeBottom);
-    const gaugeSize = Math.min(W * 1.26 * 1.3, 468, W - 20);
-    const arcR = gaugeSize * 0.55 * 0.5; // gauge-renderer 内部以 SIZE/2 为半径基准
-    // 让圆心位于：屏底 - padBelowArc - 圆弧半径
-    const gaugeCY = H - padBelowArc - arcR + 12; // 在原基础上微调下移 12px
+    const GAUGE_LAYOUT_SCALE = 1.2;
+    const padBelowArc = Math.max(10, safeBottom + 6);
+    const gaugeSize = Math.min(W * 1.26 * 1.3 * GAUGE_LAYOUT_SCALE, 562, W - 12);
+    const arcR = gaugeSize * 0.55 * 0.5;
+    const gaugeCY = H - padBelowArc - arcR + 28;
     const gaugeCX = W / 2;
 
     // 中心球区域 = 顶部内容下方 ~ 仪表盘上方
@@ -400,16 +466,17 @@ module.exports = {
     const gameBottom = gaugeCY - arcR - 6;
     const gameH = Math.max(140, gameBottom - gameTop);
 
-    // Ambient glow
+    // Ambient glow（气球区背景，略加强以便与气球光晕衔接）
     const ambCX = W / 2, ambCY = gameTop + gameH * 0.5;
     const ambGrad = ctx.createRadialGradient(ambCX, ambCY, gameH * 0.05, ambCX, ambCY, gameH * 0.55);
-    ambGrad.addColorStop(0, 'rgba(255,80,200,0.04)');
+    ambGrad.addColorStop(0, 'rgba(255,80,200,0.08)');
+    ambGrad.addColorStop(0.5, 'rgba(255,80,200,0.03)');
     ambGrad.addColorStop(1, 'rgba(255,80,200,0)');
     ctx.save(); ctx.beginPath(); ctx.arc(ambCX, ambCY, gameH * 0.55, 0, Math.PI * 2);
     ctx.fillStyle = ambGrad; ctx.fill(); ctx.restore();
 
     if (!flags.maskNative) {
-      drawBalloon(ctx, W, gameTop, gameH, state.pressure, state.currentColor, state.currentGlow, state.currentShape, state.isExploding, state.gameState === 'success', this.dpr);
+      drawBalloon(ctx, W, gameTop, gameH, state.pressure, state.currentColor, state.currentGlow, state.currentShape, state.isExploding, state.gameState === 'success', this.dpr, state.currentEmoji);
     }
 
     // Gauge（带 isDisabled 置灰）
@@ -444,6 +511,7 @@ module.exports = {
     if (state.gameState === 'fail') this._drawFailModal(ctx, W, H);
     if (state.showLevelComplete) this._drawLevelCompleteModal(ctx, W, H);
     if (state.showSettings) this._drawSettingsModal(ctx, W, H);
+    if (state.showLegendSlotChoice) this._drawLegendSlotChoiceModal(ctx, W, H);
     if (state.showLegendSelect) {
       this._drawLegendSelect(ctx, W, H);
       if (state.showLegendPayConfirm) this._drawLegendPayConfirm(ctx, W, H);
@@ -461,16 +529,26 @@ module.exports = {
   // ─── Progress slots builder ────────────────
   _buildSlots() {
     const seq = getSequence(state.level.id);
+    const equippedId = store.getEquippedLegend(state.currentLevelIdx);
+    const equippedMeta = equippedId ? BALLOON_TYPES.find(b => b.id === equippedId) : null;
+    const showcase = !equippedMeta ? _legendShowcaseForLevel(state.currentLevelIdx) : null;
     // 当前关刚刚完美/成功时，立即把当前格视作 done（避免视觉上还停留在 current）
     const successIdx = (state.gameState === 'success') ? state.balloonInLevel + 1 : state.completedInLevel;
-    return seq.map((item, i) => ({
-      id: i,
-      shape: item.shape,
-      color: item.color,
-      glowColor: item.glowColor,
-      status: i < successIdx ? 'done' : (i === state.balloonInLevel ? 'current' : 'empty'),
-      isPaid: i === 9, isBought: state.paidBalloonUsed && i === 9
-    }));
+    return seq.map((item, i) => {
+      const slotItem = (i === 9 && equippedMeta) ? equippedMeta : item;
+      const carousel = i === 9 && !equippedMeta;
+      return {
+        id: i,
+        emoji: slotItem.emoji,
+        shape: slotItem.shape,
+        color: slotItem.color,
+        glowColor: slotItem.glowColor,
+        status: i < successIdx ? 'done' : (i === state.balloonInLevel ? 'current' : 'empty'),
+        isPaid: i === 9, isBought: state.paidBalloonUsed && i === 9,
+        carouselDefault: carousel ? item : null,
+        carouselLegend: carousel ? showcase : null
+      };
+    });
   },
 
   // ─── Touch handling ────────────────────────
@@ -516,9 +594,10 @@ module.exports = {
     }
 
     if (type === 'start' || type === 'begin') {
+      if (state.balloonInLevel === 9 && !state.legendSlot10ChoiceDone) return true;
       if (!state.isGameActive || state.gameState === 'success' || state.isHolding) return true;
 
-      // 置灰态：再次唤起对应的失败弹窗，不进入充气
+      // 置灰态：再次唤起「继续挑战」弹窗，不进入充气
       if (state.pumpDisabled) {
         state.gameState = 'fail';
         return true;
@@ -545,6 +624,17 @@ module.exports = {
 
     if (type === 'end' || type === 'tap') {
       if (state.isHolding) { state.isHolding = false; this._stopPump(); this._checkPressure(); }
+      // 置灰时部分机型只触发 tap/end 不触发 start：点在圆形充气区仍打开继续挑战弹窗
+      if (state.pumpDisabled && !state.isHolding && (type === 'tap' || type === 'end')) {
+        const btn = this._pumpBtn;
+        if (btn && btn.visible) {
+          const dx = x - btn.cx, dy = y - btn.cy;
+          if ((dx * dx + dy * dy) <= (btn.r * 1.5) * (btn.r * 1.5)) {
+            state.gameState = 'fail';
+            return true;
+          }
+        }
+      }
       // 关键：返回 false 让 SceneManager 派发 tap 给 addTouchable 注册的按钮
       return false;
     }
@@ -581,24 +671,31 @@ module.exports = {
     if (typeof wx === 'undefined' || typeof wx.createInnerAudioContext !== 'function') return;
     try {
       const audio = wx.createInnerAudioContext();
-      audio.src = 'audio/daqisheng.MP3';
+      this._pumpAudioSrcIndex = 0;
+      audio.src = AUDIO_SRC.pump[this._pumpAudioSrcIndex];
       audio.loop = true;
       audio.obeyMuteSwitch = false;
       audio.volume = 1.0;
-      if (audio.onCanplay) audio.onCanplay(() => { console.log('[battle.pumpAudio] canplay'); });
-      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.pumpAudio] playing'); });
+      if (audio.onCanplay) audio.onCanplay(() => { console.log('[battle.pumpAudio] canplay:', audio.src); });
+      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.pumpAudio] playing:', audio.src); });
       if (audio.onStop)    audio.onStop(()    => { console.log('[battle.pumpAudio] stopped'); });
-      if (audio.onError)   audio.onError((err)=> { console.warn('[battle.pumpAudio] onError:', err && (err.errMsg || err)); });
+      if (audio.onError)   audio.onError((err)=> {
+        console.warn('[battle.pumpAudio] onError:', audio.src, err && (err.errMsg || err));
+        const next = (this._pumpAudioSrcIndex || 0) + 1;
+        if (next < AUDIO_SRC.pump.length) {
+          this._pumpAudioSrcIndex = next;
+          audio.src = AUDIO_SRC.pump[next];
+          console.log('[battle.pumpAudio] retry src:', audio.src);
+          try { if (state.isHolding && typeof audio.play === 'function') audio.play(); } catch (_) {}
+        }
+      });
       this._pumpAudio = audio;
     } catch (e) {
       console.warn('[battle.pumpAudio] init failed:', e && e.message);
     }
   },
   _startPumpAudio() {
-    try {
-      const settings = store.getSettings && store.getSettings();
-      if (settings && settings.soundOn === false) return; // 设置里关了音效就别播
-    } catch (_) {}
+    if (!isSoundOn()) return;
     this._ensurePumpAudio();
     const a = this._pumpAudio;
     if (!a) return;
@@ -622,34 +719,127 @@ module.exports = {
     if (typeof wx === 'undefined' || typeof wx.createInnerAudioContext !== 'function') return;
     try {
       const audio = wx.createInnerAudioContext();
-      audio.src = 'audio/baozha.MP3';
+      this._explodeAudioSrcIndex = 0;
+      audio.src = AUDIO_SRC.explode[this._explodeAudioSrcIndex];
       audio.loop = false;
       audio.obeyMuteSwitch = false;
       audio.volume = 1.0;
-      if (audio.onCanplay) audio.onCanplay(() => { console.log('[battle.explodeAudio] canplay'); });
-      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.explodeAudio] playing'); });
-      if (audio.onEnded)   audio.onEnded(()   => { console.log('[battle.explodeAudio] ended'); });
-      if (audio.onError)   audio.onError((err)=> { console.warn('[battle.explodeAudio] onError:', err && (err.errMsg || err)); });
+      if (audio.onCanplay) audio.onCanplay(() => {
+        console.log('[battle.explodeAudio] canplay:', audio.src);
+        try {
+          if (this._explodeAudioPendingPlay && typeof audio.play === 'function') audio.play();
+        } catch (_) {}
+      });
+      if (audio.onPlay)    audio.onPlay(()    => { console.log('[battle.explodeAudio] playing:', audio.src); });
+      if (audio.onEnded)   audio.onEnded(()   => { this._explodeAudioPendingPlay = false; console.log('[battle.explodeAudio] ended'); });
+      if (audio.onError)   audio.onError((err)=> {
+        console.warn('[battle.explodeAudio] onError:', audio.src, err && (err.errMsg || err));
+        const next = (this._explodeAudioSrcIndex || 0) + 1;
+        if (next < AUDIO_SRC.explode.length) {
+          this._explodeAudioSrcIndex = next;
+          audio.src = AUDIO_SRC.explode[next];
+          console.log('[battle.explodeAudio] retry src:', audio.src);
+          try { if (this._explodeAudioPendingPlay && typeof audio.play === 'function') audio.play(); } catch (_) {}
+        }
+      });
       this._explodeAudio = audio;
     } catch (e) {
       console.warn('[battle.explodeAudio] init failed:', e && e.message);
     }
   },
   _playExplosionAudio() {
-    try {
-      const settings = store.getSettings && store.getSettings();
-      if (settings && settings.soundOn === false) return;
-    } catch (_) {}
+    if (!isSoundOn()) return;
     this._ensureExplodeAudio();
     const a = this._explodeAudio;
     if (!a) return;
+    if (this._explosionSoundTimer) {
+      try { clearTimeout(this._explosionSoundTimer); } catch (_) {}
+      this._explosionSoundTimer = null;
+    }
+    const self = this;
+    const fire = () => {
+      self._explosionSoundTimer = null;
+      try {
+        if (typeof a.stop === 'function') a.stop();
+        self._explodeAudioPendingPlay = true;
+        if (typeof a.play === 'function') a.play();
+      } catch (e) {
+        console.warn('[battle.explodeAudio] play failed:', e && e.message);
+      }
+    };
+    // 泵声刚停、失败弹窗刚出现时，同帧抢播爆炸音在部分机型会无声；短延迟与弹窗首帧对齐且避开音频切换竞态。
+    if (typeof setTimeout === 'function') {
+      this._explosionSoundTimer = setTimeout(fire, 48);
+    } else {
+      fire();
+    }
+  },
+
+  /** 单次短音效（充气不足 louqi、通关花束 mofa、成功充气 chenggong 等），与爆炸音相同：canplay 补播 + 短延迟对齐弹窗 */
+  _ensureOneShotBattleAudio(kind) {
+    const audioKey = '_' + kind + 'Audio';
+    if (this[audioKey]) return;
+    if (typeof wx === 'undefined' || typeof wx.createInnerAudioContext !== 'function') return;
+    const urls = AUDIO_SRC[kind];
+    if (!urls || !urls.length) return;
+    const scene = this;
+    const pendingKey = '_' + kind + 'AudioPendingPlay';
+    const srcIndexKey = '_' + kind + 'AudioSrcIndex';
     try {
-      // 连续爆炸时先 stop（会自动复位到 0），然后立刻 play；不要在这里 seek，
-      // 否则在「未就绪」状态下会把 play 截胡。
-      if (typeof a.stop === 'function') a.stop();
-      if (typeof a.play === 'function') a.play();
+      const audio = wx.createInnerAudioContext();
+      this[srcIndexKey] = 0;
+      audio.src = urls[this[srcIndexKey]];
+      audio.loop = false;
+      audio.obeyMuteSwitch = false;
+      audio.volume = 1.0;
+      if (audio.onCanplay) audio.onCanplay(() => {
+        try {
+          if (scene[pendingKey] && typeof audio.play === 'function') audio.play();
+        } catch (_) {}
+      });
+      if (audio.onPlay) audio.onPlay(() => { try { console.log('[battle.' + kind + 'Audio] playing:', audio.src); } catch (_) {} });
+      if (audio.onEnded) audio.onEnded(() => { scene[pendingKey] = false; });
+      if (audio.onError) audio.onError((err) => {
+        console.warn('[battle.' + kind + 'Audio] onError:', audio.src, err && (err.errMsg || err));
+        const next = (scene[srcIndexKey] || 0) + 1;
+        if (next < urls.length) {
+          scene[srcIndexKey] = next;
+          audio.src = urls[next];
+          try { if (scene[pendingKey] && typeof audio.play === 'function') audio.play(); } catch (_) {}
+        }
+      });
+      this[audioKey] = audio;
     } catch (e) {
-      console.warn('[battle.explodeAudio] play failed:', e && e.message);
+      console.warn('[battle.' + kind + 'Audio] init failed:', e && e.message);
+    }
+  },
+  _playOneShotBattleAudio(kind, delayMs) {
+    if (!isSoundOn()) return;
+    this._ensureOneShotBattleAudio(kind);
+    const a = this['_' + kind + 'Audio'];
+    if (!a) return;
+    const timerKey = '_' + kind + 'SoundTimer';
+    if (this[timerKey]) {
+      try { clearTimeout(this[timerKey]); } catch (_) {}
+      this[timerKey] = null;
+    }
+    const scene = this;
+    const pendingKey = '_' + kind + 'AudioPendingPlay';
+    const fire = () => {
+      scene[timerKey] = null;
+      try {
+        if (typeof a.stop === 'function') a.stop();
+        scene[pendingKey] = true;
+        if (typeof a.play === 'function') a.play();
+      } catch (e) {
+        console.warn('[battle.' + kind + 'Audio] play failed:', e && e.message);
+      }
+    };
+    const d = delayMs == null ? 48 : delayMs;
+    if (typeof setTimeout === 'function') {
+      this[timerKey] = setTimeout(fire, d);
+    } else {
+      fire();
     }
   },
 
@@ -658,8 +848,15 @@ module.exports = {
     const { targetMin, targetMax } = state.level;
     if (p >= targetMin && p <= targetMax) {
       state.isPerfect = p >= targetMin + 0.5 && p <= targetMax - 0.5;
-      if (state.balloonInLevel === 9) { state.gameState = 'success'; setTimeout(() => this._handleNextBalloon(), 80); return; }
-      state.gameState = 'success'; return;
+      // 第 10 个：不播成功弹窗音，通关气球束弹窗在 _handleNextBalloon 里播 mofa
+      if (state.balloonInLevel === 9) {
+        state.gameState = 'success';
+        setTimeout(() => this._handleNextBalloon(), 80);
+        return;
+      }
+      this._playOneShotBattleAudio('chenggong', 48);
+      state.gameState = 'success';
+      return;
     }
     if (p > targetMax) { this._failPump('high', p); return; }
     this._failPump('low', p);
@@ -670,13 +867,17 @@ module.exports = {
     state.flashWhite = reason === 'explode';
     state.pressure = 0; state.gameState = 'fail'; state.isGameActive = false;
     state.failCount++; state.failReason = reason;
+    state.failSamplePressure = Math.round(p);
     state.failChoiceMode = state.restartChances > 0 ? 'hasRestart' : 'adOnly';
     const { targetMin, targetMax } = state.level;
-    if (reason === 'explode') { state.failTitle = '气球炸了！'; state.failDesc = '压力爆表了！这算一次失败。'; }
-    else if (reason === 'high') { state.failTitle = '气球炸了！'; state.failDesc = '超过目标上限 ' + targetMax + '。本次：' + Math.round(p); }
-    else { state.failTitle = '充气不足'; state.failDesc = '未达到目标下限 ' + targetMin + '。本次：' + Math.round(p); }
+    if (reason === 'explode') { state.failTitle = '气球炸了！'; state.failDesc = ''; }
+    else if (reason === 'high') { state.failTitle = '气球炸了！'; state.failDesc = ''; }
+    else { state.failTitle = '充气不足'; state.failDesc = ''; }
     if (reason === 'explode') { setTimeout(() => state.flashWhite = false, 150); setTimeout(() => state.isExploding = false, 520); }
-    if (reason === 'explode') { const c = getBalloonCenter(); spawnExplosion(c.x, c.y); this._playExplosionAudio(); }
+    if (reason === 'explode') { const c = getBalloonCenter(); spawnExplosion(c.x, c.y); }
+    if (reason === 'explode' || reason === 'high') { this._playExplosionAudio(); }
+    if (reason === 'low') { this._playOneShotBattleAudio('louqi', 48); }
+    state.failFresh = true;
   },
 
   _resetInLevel() {
@@ -687,6 +888,13 @@ module.exports = {
     state.completedInLevel = 0; state.balloonInLevel = 0; state.completedBalloonsList = [];
     state.restartChances = retries;
     state.pumpDisabled = false;
+    state.failFresh = false;
+    state.failSamplePressure = null;
+    state.showLegendSlotChoice = false;
+    state.legendSlot10ChoiceDone = false;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
     resetParticles();
     this._syncDerived({ balloonInLevel: 0, completedInLevel: 0 });
   },
@@ -706,6 +914,7 @@ module.exports = {
     const list = (state.completedBalloonsList || []).concat([{
       balloonId: completedMeta.balloonId || completedMeta.id,
       name: completedMeta.name,
+      emoji: completedMeta.emoji,
       shape: completedMeta.shape,
       color: completedMeta.color,
       glowColor: completedMeta.glowColor,
@@ -714,16 +923,38 @@ module.exports = {
 
     state.pumpDisabled = false;
 
+    if (nextBalloon === 9) {
+      state.completedBalloonsList = list;
+      state.completedInLevel = nextCompleted;
+      state.balloonInLevel = 9;
+      state.pressure = 0;
+      state.gameState = 'idle';
+      state.legendSlot10ChoiceDone = false;
+      this._prepareLegendSlot10Choice();
+      this._syncDerived({ balloonInLevel: 9, completedInLevel: nextCompleted });
+      resetParticles();
+      return;
+    }
+
     if (nextBalloon >= 10) {
       const bonusPts = (state.currentLevelIdx + 1) * 500;
+      const clearedLevel = state.currentLevelIdx + 1;
       store.unlockLevel(state.currentLevelIdx + 2);
       store.setLastPlayedLevel(Math.min(state.currentLevelIdx + 2, 4));
-      store.addClearRecord({ level: state.currentLevelIdx + 1, isFullClear: false, hasLegend: isPaidSlot, balloons: list });
-      store.addBouquet({ level: state.currentLevelIdx + 1, hasLegend: isPaidSlot, balloons: list });
-      // 通关记录（Bug 3 修复：补 recordFullClear）
-      try { store.recordFullClear(); } catch (_) {}
+      store.addBouquet({ level: clearedLevel, hasLegend: isPaidSlot, balloons: list });
+      if (clearedLevel === 1) {
+        try { store.setFullRunAnchorIfNeeded(); } catch (_) {}
+      }
+      if (clearedLevel === 4) {
+        const anchor = store.getFullRunAnchorMs ? store.getFullRunAnchorMs() : 0;
+        const durationMs = anchor ? (Date.now() - anchor) : 0;
+        store.addClearRecord({ isFullRun: true, durationMs, hasLegend: isPaidSlot });
+        try { store.clearFullRunAnchor(); } catch (_) {}
+        try { store.recordFullClear(); } catch (_) {}
+      }
       state.completedBalloonsList = list; state.completedInLevel = 10; state.balloonInLevel = 0;
       state.showLevelComplete = true; state.levelBonusPts = bonusPts;
+      this._playOneShotBattleAudio('mofa', 48);
       state.bouquetReady = false; state.bouquetAnimStartMs = Date.now();
       this._syncDerived({ completedInLevel: 10, balloonInLevel: 0 });
       resetParticles();
@@ -789,6 +1020,13 @@ module.exports = {
     ctx.restore();
   },
 
+  _drawSecondModalBackdrop(ctx, W, H) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.80)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  },
+
   // ─── Tutorial Modal（左右各 40，标题 18 / 正文 14） ──
   _drawTutorialModal(ctx, W, H) {
     const mw = W - 80, mx = 40;
@@ -816,27 +1054,38 @@ module.exports = {
     this._showPumpTipFor(3000);
   },
 
-  // ─── Fail Modal（紫红色调，参考完美充气样式） ──
+  // ─── Fail Modal：首次为「充气不足 / 气球炸了」；取消置灰后再点为「继续挑战」
   _drawFailModal(ctx, W, H) {
     const mw = W - 80, mx = 40;
-    const py = 24, px = 20;
-    const heroH = 96, gap = 12, titleH = 28, descH = 18, btnH = 50;
+    const py = 18, px = 18;
+    const heroH = 72, gap = 8, titleH = 24, btnH = 46;
     const isAdOnly = state.failChoiceMode !== 'hasRestart';
-    const helpBtnH = 22;
     const hasSecondary = true;
-    const mh = py + helpBtnH + gap + heroH + gap + titleH + gap + descH + gap * 2 + btnH + (hasSecondary ? gap + btnH : 0) + gap + 28 + py;
+    const helpBtnH = 20;
+    const { targetMin, targetMax } = state.level;
+
+    const pv = state.failSamplePressure != null ? state.failSamplePressure : '—';
+    const detailFresh = '本关目标压力区间：' + targetMin + '~' + targetMax + '，本次：' + pv;
+    const titleText = state.failFresh ? state.failTitle : '继续挑战';
+    /** 标题 ↔ 压力行 ↔ 首按钮 等距（仅首次失败有压力行） */
+    const midGap = 16;
+    const bodyH = state.failFresh ? 22 : 0;
+    const mh = state.failFresh
+      ? py + helpBtnH + gap + heroH + gap + titleH + midGap + bodyH + midGap + btnH + gap + btnH + gap + 26 + py
+      : py + helpBtnH + gap + heroH + gap + titleH + midGap + btnH + gap + btnH + gap + 26 + py;
     const my = (H - mh) / 2;
+
+    const adLabel = '看广告再试一次';
+    const resetLabel = isAdOnly ? '重置挑战' : ('重新开始本关（剩余重开次数 ' + state.restartChances + '）');
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)', 24);
-    // 外发光（柔化：alpha 与 blur 都减半）
     ctx.shadowColor = 'rgba(244,114,182,0.28)';
     ctx.shadowBlur = 14;
     roundRect(ctx, mx, my, mw, mh, 24);
     ctx.strokeStyle = 'rgba(244,114,182,0.5)'; ctx.lineWidth = 2; ctx.stroke();
     ctx.shadowBlur = 0;
 
-    // 顶部说明按钮
     const helpW = 56, helpX = mx + mw - px - helpW;
     const helpY = my + py;
     ctx.save(); roundRect(ctx, helpX, helpY, helpW, helpBtnH, helpBtnH / 2);
@@ -845,35 +1094,37 @@ module.exports = {
     drawText(ctx, '说明', helpX + helpW / 2, helpY + helpBtnH / 2, 'rgba(255,255,255,0.85)', 12, 'center', undefined, 500);
     this.manager.addTouchable(helpX, helpY, helpW, helpBtnH, 'openFailHelp');
 
-    // hero（动画放大的矢量气球，紫红色）
     const heroY = my + py + helpBtnH + gap;
     const bounce = (Math.sin(state.time * 3) * 0.05 + 1);
+    const isBurstFail = state.failReason === 'explode' || state.failReason === 'high'
+      || state.failTitle === '气球炸了！';
     ctx.save();
     ctx.translate(W / 2, heroY + heroH / 2);
     ctx.scale(bounce, bounce);
-    drawBalloonShape(ctx, 'round', 0, 0, heroH * 0.42,
-      '#f472b6', '#a78bfa', 0, 60, false, state.time, this.dpr, true);
+    if (isBurstFail) {
+      drawExplosionBurst(ctx, 0, 0, heroH);
+    } else {
+      drawBalloonShape(ctx, 'round', 0, 0, heroH * 0.42,
+        '#f472b6', '#a78bfa', 0, 60, false, state.time, this.dpr, true);
+    }
     ctx.restore();
 
-    // 标题（24px，柔化粉紫发光）
     const titleY = heroY + heroH + gap;
     ctx.save();
     ctx.shadowColor = 'rgba(244,114,182,0.45)';
     ctx.shadowBlur = 10;
-    drawText(ctx, state.failTitle || '气球炸了！', W / 2, titleY + titleH / 2, '#f472b6', 18, 'center', undefined, 900);
+    drawText(ctx, titleText, W / 2, titleY + titleH / 2, '#f472b6', 18, 'center', undefined, 900);
     ctx.shadowBlur = 0;
     ctx.restore();
 
-    // 描述
-    const descY = titleY + titleH + gap;
-    if (state.failDesc) drawText(ctx, state.failDesc, W / 2, descY + descH / 2, 'rgba(255,255,255,0.65)', 14, 'center', undefined, 400);
+    const bodyY = titleY + titleH + midGap;
+    if (state.failFresh) {
+      drawText(ctx, detailFresh, W / 2, bodyY + bodyH / 2, 'rgba(255,255,255,0.82)', 14, 'center', undefined, 400);
+    }
 
-    // 按钮
     const btnX = mx + px, btnW = mw - px * 2;
-    const actionsTop = descY + descH + gap * 2;
+    const actionsTop = state.failFresh ? (bodyY + bodyH + midGap) : (titleY + titleH + midGap);
 
-    const b1Text = isAdOnly ? '看广告再试一次' : '看广告再试一次';
-    // 主按钮：粉→紫渐变
     ctx.save();
     roundRect(ctx, btnX, actionsTop, btnW, btnH, 16);
     const mg = ctx.createLinearGradient(btnX, actionsTop, btnX + btnW, actionsTop + btnH);
@@ -882,10 +1133,9 @@ module.exports = {
     ctx.shadowColor = 'rgba(244,114,182,0.32)'; ctx.shadowBlur = 10;
     ctx.fill(); ctx.shadowBlur = 0;
     ctx.restore();
-    drawText(ctx, b1Text, W / 2, actionsTop + btnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
+    drawText(ctx, adLabel, W / 2, actionsTop + btnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
     this.manager.addTouchable(btnX, actionsTop, btnW, btnH, 'watchAdContinue');
 
-    // 第二个按钮：透明+柔粉边框
     if (hasSecondary) {
       const sy = actionsTop + btnH + gap;
       ctx.save();
@@ -893,26 +1143,42 @@ module.exports = {
       ctx.fillStyle = 'rgba(244,114,182,0.06)'; ctx.fill();
       ctx.strokeStyle = 'rgba(244,114,182,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
-      const secondText = isAdOnly ? '重置挑战（从第 1 关开始）' : ('重置本关，从第1只开始（剩余 ' + state.restartChances + ' 次）');
-      drawText(ctx, secondText, W / 2, sy + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
+      drawText(ctx, resetLabel, W / 2, sy + btnH / 2, '#f472b6', 12, 'center', undefined, 600);
       this.manager.addTouchable(btnX, sy, btnW, btnH, isAdOnly ? 'openResetChallengeConfirm' : 'restartFromFail');
     }
 
-    // 取消（次级文字按钮）
     const cancelY = actionsTop + btnH + (hasSecondary ? btnH + gap : 0) + gap;
-    drawText(ctx, '取消', W / 2, cancelY + 14, 'rgba(255,255,255,0.7)', 14, 'center', undefined, 500);
+    drawText(ctx, '取消', W / 2, cancelY + 13, 'rgba(255,255,255,0.7)', 14, 'center', undefined, 500);
     this.manager.addTouchable(btnX, cancelY, btnW, 28, 'cancelFailModal');
     ctx.restore();
 
-    if (state.failHelpOpen) this._drawFailHelpPopup(ctx, W, H, mx, my, mw, mh);
+    if (state.failHelpOpen) this._drawFailHelpPopup(ctx, W, H);
   },
+
   cancelFailModal() {
+    if (this._explosionSoundTimer) {
+      try { clearTimeout(this._explosionSoundTimer); } catch (_) {}
+      this._explosionSoundTimer = null;
+    }
+    if (this._louqiSoundTimer) {
+      try { clearTimeout(this._louqiSoundTimer); } catch (_) {}
+      this._louqiSoundTimer = null;
+    }
+    if (this._mofaSoundTimer) {
+      try { clearTimeout(this._mofaSoundTimer); } catch (_) {}
+      this._mofaSoundTimer = null;
+    }
+    if (this._chenggongSoundTimer) {
+      try { clearTimeout(this._chenggongSoundTimer); } catch (_) {}
+      this._chenggongSoundTimer = null;
+    }
     if (state.gameState === 'fail') {
       state.failHelpOpen = false;
       state.gameState = 'idle';
       state.isGameActive = false;
       state.pressure = 0;
       state.pumpDisabled = true;
+      state.failFresh = false;
     }
   },
   openFailHelp() { state.failHelpOpen = true; },
@@ -921,20 +1187,34 @@ module.exports = {
     const pw = W - 80, mx = 40;
     const py = 22, px = 20, gap = 12;
     const titleH = 22, lineGap = 22, btnH = 44;
-    const ph = py + titleH + gap + lineGap * 4 + gap + btnH + py;
+    const isAdOnly = state.failChoiceMode !== 'hasRestart';
+    const bodyLines = isAdOnly
+      ? [
+          '看广告再试一次：',
+          '仅重打当前气球；',
+          '重置挑战：',
+          '清空闯关进度，从第 1 关重新开始。'
+        ]
+      : [
+          '看广告再试一次：',
+          '仅重打当前气球；',
+          '重新开始本关：',
+          '每次消耗1次重开机会；剩余重开次数 ' + state.restartChances + ' 次。'
+        ];
+    const ph = py + titleH + gap + bodyLines.length * lineGap + gap + btnH + py;
     const my = (H - ph) / 2;
+    this._drawSecondModalBackdrop(ctx, W, H);
+    this.manager.addTouchable(0, 0, W, H, () => {});
     ctx.save();
     this._drawModalBg(ctx, mx, my, pw, ph, 'rgba(255,80,200,0.5)');
     drawText(ctx, '规则说明', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    const isAdOnly = state.failChoiceMode !== 'hasRestart';
-    const line1Y = my + py + titleH + gap;
-    drawWrappedText(ctx, '看广告再试一次：不消耗重开次数，仅重打当前气球；', mx + px, line1Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
-    const line2Y = line1Y + lineGap * 2;
-    if (!isAdOnly) {
-      drawWrappedText(ctx, '重置本关：每次消耗 1 次重开机会，从本关第 1 只气球重新开始；当前剩余 ' + state.restartChances + ' 次。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
-    } else {
-      drawWrappedText(ctx, '重置挑战：重开机会已用完时可用，将清除挑战进度，从第 1 关重新开始。', mx + px, line2Y, pw - px * 2, lineGap, 'rgba(255,255,255,0.75)', 14);
-    }
+    const bodyColor = 'rgba(255,255,255,0.75)';
+    const bodyFs = 14;
+    let ly = my + py + titleH + gap + lineGap / 2;
+    bodyLines.forEach((line) => {
+      drawText(ctx, line, mx + px, ly, bodyColor, bodyFs, 'left', undefined, 400);
+      ly += lineGap;
+    });
     const btn = drawButtonGradient(ctx, mx + px, my + ph - py - btnH, pw - px * 2, btnH, '知道了', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 14, undefined, 600);
     this.manager.addTouchable(btn.x, btn.y, btn.w, btn.h, 'closeFailHelp');
     ctx.restore();
@@ -946,6 +1226,7 @@ module.exports = {
       state.pressure = 0; state.isHolding = false; state.isExploding = false; state.flashWhite = false;
       state.gameState = 'idle'; state.isGameActive = true; state.failCount = 0;
       state.pumpDisabled = false;
+      state.failFresh = false;
       resetParticles();
       showToast('广告完成，继续当前气球');
     }, 500);
@@ -997,9 +1278,8 @@ module.exports = {
     const mw = W - 80, mx = 40;
     const py = 24, px = 20;
     const heroH = 96, gap = 12, titleH = 28, descH = 18, btnH = 50;
-    const perfectH = state.isPerfect ? 28 : 0;
     const dotsH = 22;
-    const mh = py + heroH + gap + titleH + (perfectH ? gap + perfectH : 0) + gap + dotsH + gap + descH + gap * 2 + btnH + py;
+    const mh = py + heroH + gap + titleH + gap + dotsH + gap + descH + gap * 2 + btnH + py;
     const my = (H - mh) / 2;
 
     ctx.save();
@@ -1034,23 +1314,6 @@ module.exports = {
     ctx.restore();
 
     let curY = titleY + titleH + gap;
-
-    // 完美奖励（金色 pill，宽度自适应）
-    if (state.isPerfect) {
-      const badgeText = '完美奖励 +50 分';
-      const badgeFS = 12;
-      const badgeTW = measureText(ctx, badgeText, badgeFS, 700);
-      const badgeW = Math.ceil(badgeTW + 28);
-      const badgeX = W / 2 - badgeW / 2;
-      ctx.save();
-      roundRect(ctx, badgeX, curY, badgeW, perfectH, perfectH / 2);
-      const bg = ctx.createLinearGradient(badgeX, 0, badgeX + badgeW, 0);
-      bg.addColorStop(0, '#ffd740'); bg.addColorStop(1, '#ff9100');
-      ctx.fillStyle = bg; ctx.fill();
-      ctx.restore();
-      drawText(ctx, badgeText, W / 2, curY + perfectH / 2, '#1a0000', badgeFS, 'center', undefined, 700);
-      curY += perfectH + gap;
-    }
 
     // 进度圆点 + 计数同行
     const totalDots = 10;
@@ -1183,15 +1446,15 @@ module.exports = {
   _drawLevelCompleteModal(ctx, W, H) {
     const mw = W - 80, mx = 40;
     let pyTop = 10;
-    let pyBottom = 8;
+    let pyBottom = 24;
     const px = 10;
     let bannerH = 50;
-    const gapBannerBouquet = 4;
+    const gapBannerBouquet = 24;
     const statsGap = 2;
     let statsH = 54;
-    const gapStatsActions = 5;
+    const gapStatsActions = 12;
     let btn1H = 42;
-    const btnGap = 5;
+    const btnGap = 12;
     let btn2H = 48;
     const maxModalH = Math.floor(H * 0.6);
     const minBouquet = 64;
@@ -1211,10 +1474,8 @@ module.exports = {
       if (btn1H > 36) btn1H -= 2;
       fixedH = packFixed();
     }
-    while (fixedH + minBouquet > maxModalH && pyTop + pyBottom > 12) {
-      if (pyTop > 6) pyTop -= 1;
-      else if (pyBottom > 4) pyBottom -= 1;
-      else break;
+    while (fixedH + minBouquet > maxModalH && pyTop > 6) {
+      pyTop -= 1;
       fixedH = packFixed();
     }
     while (fixedH > maxModalH - 52) {
@@ -1280,7 +1541,7 @@ module.exports = {
     const bqY = my + pyTop + bannerH + gapBannerBouquet;
     const bqW = mw - px * 2;
     const elapsedSec = (Date.now() - (state.bouquetAnimStartMs || Date.now())) / 1000;
-    drawBouquetCompletionAnim(ctx, state.completedBalloonsList, bqX, bqY, bqW, bouquetH, elapsedSec);
+    drawBouquetCompletionAnim(ctx, (state.completedBalloonsList || []).map(_normalizeBouquetBalloon), bqX, bqY, bqW, bouquetH, elapsedSec);
 
     const statsY = bqY + bouquetH + statsGap;
     const statW = (mw - px * 2 - 12) / 3;
@@ -1342,10 +1603,261 @@ module.exports = {
     state.balloonInLevel = 0; state.completedBalloonsList = []; state.pressure = 0; state.gameState = 'idle';
     state.isGameActive = true; state.restartChances = retries; state.failCount = 0; state.bouquetReady = false;
     state.pumpDisabled = false;
+    state.showLegendSlotChoice = false;
+    state.legendSlot10ChoiceDone = false;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
     resetParticles(); this._syncDerived({ currentLevelIdx: nextIdx, balloonInLevel: 0, completedInLevel: 0 });
   },
   levelCompleteHome() { this.manager.switchTo('home'); },
   openSharePreview() { showToast('分享功能已就绪'); },
+
+  // ─── 第十个气球：默认 / 购买传奇 / 已有可装备 ──
+  _getSlot10EquippableLegends() {
+    const levelIdx = state.currentLevelIdx;
+    const legends = _paidBalloonTypesOrdered();
+    const list = [];
+    for (const l of legends) {
+      if (store.getBalloonQuantity(l.id) < 1) continue;
+      if (store.canEquipLegend(levelIdx, l.id).ok) list.push(l);
+    }
+    return list;
+  },
+
+  _prepareLegendSlot10Choice() {
+    const levelIdx = state.currentLevelIdx;
+    const equippable = this._getSlot10EquippableLegends();
+    const already = store.getEquippedLegend(levelIdx);
+    let autoId = null;
+    if (equippable.length > 0) {
+      const pick = already && equippable.some(l => l.id === already)
+        ? equippable.find(l => l.id === already)
+        : equippable[0];
+      autoId = pick.id;
+    }
+    state.legendSlot10Mode = equippable.length > 0 ? 'owned' : 'purchase';
+    state.legendSlot10AutoEquipId = autoId;
+    state.showLegendSlotChoice = true;
+    state.isGameActive = false;
+  },
+
+  _finishLegendSlot10Choice() {
+    state.legendSlot10ChoiceDone = true;
+    state.showLegendSlotChoice = false;
+    state.isGameActive = true;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
+  },
+
+  _drawLegendSlotChoiceModal(ctx, W, H) {
+    if (state.legendSlot10Mode === 'owned') {
+      this._drawLegendSlotOwnedModal(ctx, W, H);
+      return;
+    }
+    this._drawSecondModalBackdrop(ctx, W, H);
+    this.manager.addTouchable(0, 0, W, H, () => {});
+
+    const mw = W - 80;
+    const mx = 40;
+    const py = 18;
+    const px = 18;
+    const heroH = 72;
+    const gap = 16;
+    const titleH = 24;
+    const body = '本关挑战即将完成，第十个气球允许装备传奇气球，请选择需要装备的气球：';
+    const bodyH = CONFIRM_BODY.lh * 3;
+    const btnH = 46;
+    const mh = py + heroH + gap + titleH + gap + bodyH + gap + btnH + gap + btnH + py;
+    const my = (H - mh) / 2;
+
+    ctx.save();
+    this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)', 24);
+    ctx.shadowColor = 'rgba(244,114,182,0.28)';
+    ctx.shadowBlur = 14;
+    roundRect(ctx, mx, my, mw, mh, 24);
+    ctx.strokeStyle = 'rgba(244,114,182,0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    const heroY = my + py;
+    const bounce = (Math.sin(state.time * 3) * 0.05 + 1);
+    ctx.save();
+    ctx.translate(W / 2, heroY + heroH / 2);
+    ctx.scale(bounce, bounce);
+    drawBalloonShape(ctx, 'round', 0, 0, heroH * 0.42,
+      '#ffd740', '#f472b6', 0, 60, false, state.time, this.dpr, true);
+    ctx.restore();
+
+    const titleY = heroY + heroH + gap;
+    ctx.save();
+    ctx.shadowColor = 'rgba(244,114,182,0.45)';
+    ctx.shadowBlur = 10;
+    drawText(ctx, '传奇气球', W / 2, titleY + titleH / 2, '#f472b6', 18, 'center', undefined, 900);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    const bodyY = titleY + titleH + gap;
+    drawWrappedText(ctx, body, mx + px, bodyY, mw - px * 2, CONFIRM_BODY.lh, 'rgba(255,255,255,0.82)', CONFIRM_BODY.fs, CONFIRM_BODY.fw);
+
+    const btnX = mx + px;
+    const btnW = mw - px * 2;
+    const actionsTop = bodyY + bodyH + gap;
+
+    // 次要：默认气球（描边，同失败弹窗「重新开始」）
+    ctx.save();
+    roundRect(ctx, btnX, actionsTop, btnW, btnH, 16);
+    ctx.fillStyle = 'rgba(244,114,182,0.06)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(244,114,182,0.42)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+    drawText(ctx, '默认气球', W / 2, actionsTop + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
+    this.manager.addTouchable(btnX, actionsTop, btnW, btnH, 'chooseDefaultLegendSlot');
+
+    const buyY = actionsTop + btnH + gap;
+    // 主操作：购买传奇气球（粉紫渐变，同失败弹窗「看广告再试一次」）
+    ctx.save();
+    roundRect(ctx, btnX, buyY, btnW, btnH, 16);
+    const mg = ctx.createLinearGradient(btnX, buyY, btnX + btnW, buyY + btnH);
+    mg.addColorStop(0, '#f472b6');
+    mg.addColorStop(1, '#a78bfa');
+    ctx.fillStyle = mg;
+    ctx.fill();
+    ctx.shadowColor = 'rgba(244,114,182,0.32)';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+    drawText(ctx, '购买传奇气球', W / 2, buyY + btnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
+    this.manager.addTouchable(btnX, buyY, btnW, btnH, 'choosePurchaseLegendSlot');
+    ctx.restore();
+  },
+
+  _drawLegendSlotOwnedModal(ctx, W, H) {
+    this._drawSecondModalBackdrop(ctx, W, H);
+    this.manager.addTouchable(0, 0, W, H, () => {});
+
+    const meta = state.legendSlot10AutoEquipId
+      ? BALLOON_TYPES.find(b => b.id === state.legendSlot10AutoEquipId)
+      : null;
+    const legendName = (meta && meta.name) || '传奇气球';
+
+    const mw = W - 80;
+    const mx = 40;
+    const py = 18;
+    const px = 18;
+    const heroH = 72;
+    const gap = 16;
+    const titleH = 24;
+    const body = '您已经购买「' + legendName + '」的传奇气球，将自动装备上';
+    const bodyH = CONFIRM_BODY.lh * 2;
+    const btnH = 46;
+    const btnGap = 12;
+    const mh = py + heroH + gap + titleH + gap + bodyH + gap + btnH + btnGap + btnH + btnGap + btnH + py;
+    const my = (H - mh) / 2;
+
+    ctx.save();
+    this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)', 24);
+    ctx.shadowColor = 'rgba(244,114,182,0.28)';
+    ctx.shadowBlur = 14;
+    roundRect(ctx, mx, my, mw, mh, 24);
+    ctx.strokeStyle = 'rgba(244,114,182,0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    const heroY = my + py;
+    const bounce = (Math.sin(state.time * 3) * 0.05 + 1);
+    ctx.save();
+    ctx.translate(W / 2, heroY + heroH / 2);
+    ctx.scale(bounce, bounce);
+    const heroEmoji = (meta && meta.emoji) || '👑';
+    drawText(ctx, heroEmoji, 0, 0, '#ffffff', 36, 'center');
+    ctx.restore();
+
+    const titleY = heroY + heroH + gap;
+    ctx.save();
+    ctx.shadowColor = 'rgba(244,114,182,0.45)';
+    ctx.shadowBlur = 10;
+    drawText(ctx, '传奇气球', W / 2, titleY + titleH / 2, '#f472b6', 18, 'center', undefined, 900);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    const bodyY = titleY + titleH + gap;
+    drawWrappedText(ctx, body, mx + px, bodyY, mw - px * 2, CONFIRM_BODY.lh, 'rgba(255,255,255,0.82)', CONFIRM_BODY.fs, CONFIRM_BODY.fw);
+
+    const btnX = mx + px;
+    const btnW = mw - px * 2;
+    let actionsTop = bodyY + bodyH + gap;
+
+    const drawOutlineBtn = (y, label, action) => {
+      ctx.save();
+      roundRect(ctx, btnX, y, btnW, btnH, 16);
+      ctx.fillStyle = 'rgba(244,114,182,0.06)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(244,114,182,0.42)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
+      drawText(ctx, label, W / 2, y + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
+      this.manager.addTouchable(btnX, y, btnW, btnH, action);
+    };
+
+    ctx.save();
+    roundRect(ctx, btnX, actionsTop, btnW, btnH, 16);
+    const mg = ctx.createLinearGradient(btnX, actionsTop, btnX + btnW, actionsTop + btnH);
+    mg.addColorStop(0, '#f472b6');
+    mg.addColorStop(1, '#a78bfa');
+    ctx.fillStyle = mg;
+    ctx.fill();
+    ctx.shadowColor = 'rgba(244,114,182,0.32)';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+    drawText(ctx, '好的', W / 2, actionsTop + btnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
+    this.manager.addTouchable(btnX, actionsTop, btnW, btnH, 'confirmOwnedLegendSlot10');
+
+    actionsTop += btnH + btnGap;
+    drawOutlineBtn(actionsTop, '另外购买一个', 'choosePurchaseLegendSlot');
+
+    actionsTop += btnH + btnGap;
+    drawOutlineBtn(actionsTop, '装备普通气球', 'chooseDefaultLegendSlot');
+    ctx.restore();
+  },
+
+  confirmOwnedLegendSlot10() {
+    const bId = state.legendSlot10AutoEquipId;
+    if (bId) {
+      if (!store.equipLegend(state.currentLevelIdx, bId)) {
+        const check = store.canEquipLegend(state.currentLevelIdx, bId);
+        showToast((check && check.reason) || '装备失败');
+        return;
+      }
+      state.paidBalloonUsed = true;
+      this._syncDerived({});
+    }
+    this._finishLegendSlot10Choice();
+    this._showPumpTipFor(2500);
+  },
+
+  chooseDefaultLegendSlot() {
+    store.unequipLegend(state.currentLevelIdx);
+    state.paidBalloonUsed = false;
+    this._syncDerived({});
+    this._finishLegendSlot10Choice();
+    this._showPumpTipFor(2500);
+  },
+
+  choosePurchaseLegendSlot() {
+    state.legendSlot10OpenedPurchase = true;
+    state.showLegendSlotChoice = false;
+    this.openLegendSelect();
+  },
 
   // ─── Legend Select Modal ──
   /** 与绘制、触摸滚动共用：列表可视高度、滚动上限、格子尺寸等 */
@@ -1394,19 +1906,34 @@ module.exports = {
       const gx = mx + px + col * (cellW + cellGap);
       const gy = gridY + 4 + row * (cellH + cellGap);
       const own = owned.find(o => o.id === l.id), hasIt = own && own.quantity > 0;
+      const equipCheck = hasIt ? store.canEquipLegend(state.currentLevelIdx, l.id) : { ok: false };
+      const inflated = hasIt && !equipCheck.ok && equipCheck.reason === '已充气';
+      let subLabel = '未拥有';
+      if (hasIt) {
+        if (inflated) subLabel = '已充气';
+        else subLabel = '已拥有 ' + own.quantity;
+      }
       ctx.save();
       roundRect(ctx, gx, gy, cellW, cellH, 12);
-      ctx.fillStyle = hasIt ? 'rgba(255,215,0,0.06)' : 'rgba(255,255,255,0.04)'; ctx.fill();
-      ctx.strokeStyle = hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = inflated ? 'rgba(255,255,255,0.03)' : (hasIt ? 'rgba(255,215,0,0.06)' : 'rgba(255,255,255,0.04)');
+      ctx.fill();
+      ctx.strokeStyle = inflated ? 'rgba(255,255,255,0.12)' : (hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.08)');
+      ctx.lineWidth = 1;
+      ctx.stroke();
       ctx.save();
-      ctx.beginPath(); ctx.arc(gx + cellW / 2, gy + 24, 22, 0, Math.PI * 2);
-      ctx.strokeStyle = hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(gx + cellW / 2, gy + 24, 22, 0, Math.PI * 2);
+      ctx.strokeStyle = inflated ? 'rgba(255,255,255,0.2)' : (hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)');
+      ctx.lineWidth = 1;
+      ctx.stroke();
       ctx.restore();
+      ctx.globalAlpha = inflated ? 0.55 : 1;
       drawText(ctx, l.emoji, gx + cellW / 2, gy + 24, '#ffffff', 22, 'center');
-      drawText(ctx, l.name, gx + cellW / 2, gy + 56, '#ffffff', 14, 'center', undefined, 600);
-      drawText(ctx, hasIt ? '已拥有 ' + own.quantity : '未拥有', gx + cellW / 2, gy + 76, hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)', 12, 'center');
+      drawText(ctx, l.name, gx + cellW / 2, gy + 56, inflated ? 'rgba(255,255,255,0.45)' : '#ffffff', 14, 'center', undefined, 600);
+      drawText(ctx, subLabel, gx + cellW / 2, gy + 76, inflated ? 'rgba(255,152,0,0.85)' : (hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)'), 12, 'center');
+      ctx.globalAlpha = 1;
       ctx.restore();
-      if (!state.showLegendPayConfirm) {
+      if (!state.showLegendPayConfirm && !inflated) {
         const hitTop = gy - scrollY;
         const hitBottom = hitTop + cellH;
         if (hitBottom > gridY && hitTop < gridY + viewportH) {
@@ -1446,35 +1973,37 @@ module.exports = {
     if (!meta) return;
 
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, W, H);
+    this._drawSecondModalBackdrop(ctx, W, H);
     this.manager.addTouchable(0, 0, W, H, 'cancelLegendPay');
 
     const cardW = W - 80, cardX = 40;
     const py = 22, px = 20;
-    const titleH = 24, gap = 12, descBoxH = 52, priceLineH = 36, btnH = 48;
-    const ch = py + titleH + gap + descBoxH + gap + priceLineH + gap + btnH + py;
+    const titleH = 24, gap = 12, descBoxH = 52, btnH = 48;
+    const ch = py + titleH + gap + descBoxH + gap + btnH + gap + btnH + py;
     const cy = (H - ch) / 2;
 
     this._drawModalBg(ctx, cardX, cy, cardW, ch, 'rgba(255,80,200,0.55)', 22);
     drawText(ctx, '购买传奇气球', W / 2, cy + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
     const bodyTop = cy + py + titleH + gap;
-    drawWrappedText(ctx, '「' + meta.name + '」每只 ¥' + LEGEND_PRICE_YUAN.toFixed(2) + '。支付成功后将自动装备到本关第 10 个气球位。', cardX + px, bodyTop, cardW - px * 2, 20, 'rgba(255,255,255,0.72)', 14);
+    drawText(ctx, '「' + meta.name + '」每只¥' + LEGEND_PRICE_YUAN.toFixed(2), W / 2, bodyTop + 12, CONFIRM_BODY.color, CONFIRM_BODY.fs, 'center', undefined, CONFIRM_BODY.fw);
+    drawText(ctx, '支付成功后将自动装备到本关第10个气球位。', W / 2, bodyTop + 36, CONFIRM_BODY.color, CONFIRM_BODY.fs, 'center', undefined, CONFIRM_BODY.fw);
 
-    const priceY = bodyTop + descBoxH + gap + priceLineH / 2;
-    ctx.save();
-    ctx.shadowColor = 'rgba(255,215,0,0.45)';
-    ctx.shadowBlur = 12;
-    drawText(ctx, '¥' + LEGEND_PRICE_YUAN.toFixed(2), W / 2, priceY, '#ffd740', 14, 'center', undefined, 800);
-    ctx.shadowBlur = 0;
-    ctx.restore();
-
-    const btnY = cy + ch - py - btnH;
-    const half = (cardW - px * 3) / 2;
-    const cbtn = drawButtonGradient(ctx, cardX + px, btnY, half, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.88)', 14, 12, undefined, 600);
-    this.manager.addTouchable(cbtn.x, cbtn.y, cbtn.w, cbtn.h, 'cancelLegendPay');
-    const ok = drawButtonGradient(ctx, cardX + px * 2 + half, btnY, half, btnH, '确认支付', gradientPink, '#fff', 14, 12, undefined, 700);
+    const btnX = cardX + px;
+    const btnW = cardW - px * 2;
+    const btnY = bodyTop + descBoxH + gap;
+    const ok = drawButtonGradient(ctx, btnX, btnY, btnW, btnH, '支付 ' + LEGEND_PRICE_YUAN.toFixed(2) + ' 元', gradientPink, '#fff', 14, 16, 'rgba(244,114,182,0.32)', 700);
     this.manager.addTouchable(ok.x, ok.y, ok.w, ok.h, 'confirmLegendPay');
+    const cancelY = btnY + btnH + gap;
+    ctx.save();
+    roundRect(ctx, btnX, cancelY, btnW, btnH, 16);
+    ctx.fillStyle = 'rgba(244,114,182,0.06)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(244,114,182,0.42)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+    drawText(ctx, '取消', W / 2, cancelY + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
+    this.manager.addTouchable(btnX, cancelY, btnW, btnH, 'cancelLegendPay');
     ctx.restore();
   },
 
@@ -1482,6 +2011,11 @@ module.exports = {
     if (state.showLegendPayConfirm) return;
     if (!bId) return;
     if (store.hasBalloon(bId)) {
+      const check = store.canEquipLegend(state.currentLevelIdx, bId);
+      if (!check.ok) {
+        showToast(check.reason || '无法装备');
+        return;
+      }
       this._equipLegendFromModal(bId);
       return;
     }
@@ -1492,13 +2026,18 @@ module.exports = {
 
   _equipLegendFromModal(bId) {
     if (!store.hasBalloon(bId)) return;
-    if (!store.equipLegend(state.currentLevelIdx, bId)) return;
+    if (!store.equipLegend(state.currentLevelIdx, bId)) {
+      const check = store.canEquipLegend(state.currentLevelIdx, bId);
+      showToast((check && check.reason) || '装备失败');
+      return;
+    }
     state.paidBalloonUsed = true;
     this._syncDerived({});
     showToast('传奇气球已装上');
     state.showLegendSelect = false;
     state.showLegendPayConfirm = false;
     state.legendPayBalloonId = null;
+    if (state.balloonInLevel === 9) this._finishLegendSlot10Choice();
   },
 
   cancelLegendPay() {
@@ -1514,24 +2053,40 @@ module.exports = {
       state.legendPayBalloonId = null;
       return;
     }
+    if (readIOS()) {
+      showToast('iOS 暂不支持购买');
+      return;
+    }
     const meta = BALLOON_TYPES.find(b => b.id === bId);
-    store.addBalloon(bId, 1, 'purchase');
-    store.addTransaction({
-      type: 'purchase',
-      balloonId: bId,
-      balloonName: meta ? meta.name : bId,
-      quantity: 1,
-      amountYuan: LEGEND_PRICE_YUAN,
-      status: 'success',
-      channel: 'mock_pay'
-    });
-    store.equipLegend(state.currentLevelIdx, bId);
-    state.paidBalloonUsed = true;
-    state.showLegendPayConfirm = false;
-    state.legendPayBalloonId = null;
-    this._syncDerived({});
-    showToast('传奇气球已装上');
-    state.showLegendSelect = false;
+    const scene = this;
+    showToast('支付处理中…');
+    purchaseLegendBalloon(bId, { meta, priceYuan: LEGEND_PRICE_YUAN })
+      .then((payResult) => {
+        const channel = payResult.channel || 'mock_pay';
+        store.addBalloon(bId, 1, 'purchase');
+        store.addTransaction({
+          type: 'purchase',
+          balloonId: bId,
+          balloonName: meta ? meta.name : bId,
+          quantity: 1,
+          amountYuan: LEGEND_PRICE_YUAN,
+          status: 'success',
+          channel,
+          outTradeNo: payResult.outTradeNo || ''
+        });
+        store.equipLegend(state.currentLevelIdx, bId);
+        state.paidBalloonUsed = true;
+        state.showLegendPayConfirm = false;
+        state.legendPayBalloonId = null;
+        scene._syncDerived({});
+        showToast(channel === 'cloud_pay' ? '支付成功，传奇气球已装上' : '传奇气球已装上（演示）');
+        state.showLegendSelect = false;
+        if (state.balloonInLevel === 9) scene._finishLegendSlot10Choice();
+      })
+      .catch((err) => {
+        console.warn('[battle.confirmLegendPay]', err);
+        showToast((err && err.message) || '支付失败');
+      });
   },
 
   // ─── Reset Challenge Confirm ──
@@ -1542,12 +2097,13 @@ module.exports = {
     const mh = py + titleH + gap + descH + gap + btnH + py;
     const my = (H - mh) / 2;
 
+    this._drawSecondModalBackdrop(ctx, W, H);
     this.manager.addTouchable(0, 0, W, H, () => {});
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)');
     drawText(ctx, '确认重置挑战？', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    drawWrappedText(ctx, '将重置挑战进度，从第 1 关开始挑战，确定重置挑战吗？', mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
+    drawWrappedText(ctx, '将重置挑战进度，从第 1 关开始挑战，确定重置挑战吗？', mx + px, my + py + titleH + gap, mw - px * 2, CONFIRM_BODY.lh, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
@@ -1581,14 +2137,14 @@ module.exports = {
   _drawAbandonConfirm(ctx, W, H) {
     const mw = W - 80, mx = 40;
     const py = 22, px = 20;
-    const titleH = 22, gap = 12, descH = 44, btnH = 48;
+    const titleH = 22, gap = 12, descH = 92, btnH = 48;
     const mh = py + titleH + gap + descH + gap + btnH + py;
     const my = (H - mh) / 2;
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.4)');
-    drawText(ctx, '确认放弃？', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    drawWrappedText(ctx, '确认放弃？将重置闯关关卡进度（已获得的普通气球不会消失）。', mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
+    drawText(ctx, '放弃挑战', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
+    drawWrappedText(ctx, '放弃挑战将重置闯关关卡进度，已获得的普通气球不会消失。确定放弃挑战？', mx + px, my + py + titleH + gap, mw - px * 2, CONFIRM_BODY.lh, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
@@ -1646,6 +2202,9 @@ module.exports = {
     state.legendPayBalloonId = null;
     state.legendSelectScrollY = 0;
     state._legendSelectDrag = null;
+    if (state.balloonInLevel === 9 && !state.legendSlot10ChoiceDone) {
+      this._prepareLegendSlot10Choice();
+    }
   },
 
   // ─── Ad Restart Modal ────────────
@@ -1658,7 +2217,7 @@ module.exports = {
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(134,239,172,0.45)');
     drawText(ctx, '获取成功', W / 2, my + py + titleH / 2, '#86efac', 18, 'center', 'rgba(134,239,172,0.45)', 700);
-    if (state.adRestartModalContent) drawWrappedText(ctx, state.adRestartModalContent, mx + px, my + py + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
+    if (state.adRestartModalContent) drawWrappedText(ctx, state.adRestartModalContent, mx + px, my + py + titleH + gap, mw - px * 2, CONFIRM_BODY.lh, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '稍后', 'rgba(255,255,255,0.08)', '#fff', 14, 12, undefined, 500);

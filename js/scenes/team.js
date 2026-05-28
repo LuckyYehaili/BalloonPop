@@ -725,10 +725,12 @@ module.exports = {
       const gapHeaderStat = 16;
       const statH = 68;       // 单个 stat 子卡高度
       const gapStatBtn = 16;
+      const startBtnH = 48;
+      const gapStartInvite = 12;
       const inviteBtnH = 48;
-      const gapBtnLeave = 12;
+      const gapInviteLeave = 12;
       const leaveTextH = 22;
-      const overviewH = PAD + headerH + gapHeaderStat + statH + gapStatBtn + inviteBtnH + gapBtnLeave + leaveTextH + PAD;
+      const overviewH = PAD + headerH + gapHeaderStat + statH + gapStatBtn + startBtnH + gapStartInvite + inviteBtnH + gapInviteLeave + leaveTextH + PAD;
 
       const rowH = 64;
       // listH = [顶 8] + 概览卡 + [概览->标题 24] + [标题区(28+14=42)] + [行 i*rowH] + [底 24]
@@ -831,22 +833,35 @@ module.exports = {
         drawText(ctx, s.lab, sx + subCardW / 2, statRowY + 50, 'rgba(255,255,255,0.45)', 12, 'center', undefined, 400);
       });
 
-      // ── 邀请队员 主按钮（紫粉渐变） ──
-      const inviteY = statRowY + statH + gapStatBtn;
-      const inviteX = cardX + PAD;
-      const inviteW = cardW - PAD * 2;
+      const btnX = cardX + PAD;
+      const btnW = cardW - PAD * 2;
       const violetPinkGrad = (c, gx, gy, gw, gh) => {
         const g = c.createLinearGradient(gx, gy, gx + gw, gy + gh);
         g.addColorStop(0, '#7c4dff');
         g.addColorStop(1, '#ff50c8');
         return g;
       };
-      drawButtonGradient(ctx, inviteX, inviteY, inviteW, inviteBtnH, '邀请队员', violetPinkGrad, '#fff', 15, 14, 'rgba(255,80,200,0.4)', 700);
-      // 触区登记屏幕坐标（卡片随列表滚动 → 减去 scrollY）
-      scene.manager.addTouchable(inviteX, inviteY - state.scrollY, inviteW, inviteBtnH, 'inviteTeammates');
+
+      // ── 开始挑战 主按钮（紫粉渐变） ──
+      const startY = statRowY + statH + gapStatBtn;
+      drawButtonGradient(ctx, btnX, startY, btnW, startBtnH, '▶  开始挑战', violetPinkGrad, '#fff', 16, 14, 'rgba(255,80,200,0.4)', 700);
+      scene.manager.addTouchable(btnX, startY - state.scrollY, btnW, startBtnH, 'startChallenge');
+
+      // ── 邀请队员（次级描边按钮） ──
+      const inviteY = startY + startBtnH + gapStartInvite;
+      ctx.save();
+      roundRect(ctx, btnX, inviteY, btnW, inviteBtnH, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+      drawText(ctx, '邀请队员', btnX + btnW / 2, inviteY + inviteBtnH / 2, 'rgba(255,255,255,0.85)', 15, 'center', undefined, 600);
+      scene.manager.addTouchable(btnX, inviteY - state.scrollY, btnW, inviteBtnH, 'inviteTeammates');
 
       // ── 退出战队 文字（柔和警示色） ──
-      const leaveCy = inviteY + inviteBtnH + gapBtnLeave + leaveTextH / 2;
+      const leaveCy = inviteY + inviteBtnH + gapInviteLeave + leaveTextH / 2;
       drawText(ctx, '退出战队', cardX + cardW / 2, leaveCy, 'rgba(255,107,138,0.78)', 13, 'center', undefined, 500);
       const leaveTouchW = 120;
       scene.manager.addTouchable((W - leaveTouchW) / 2, leaveCy - leaveTextH / 2 - state.scrollY, leaveTouchW, leaveTextH + 6, 'onLeaveTap');
@@ -1831,11 +1846,15 @@ module.exports = {
     this.onShareTeam();
     state.tab = 'my';
   },
+  // 我的战队卡：开始挑战
+  startChallenge() {
+    if (this.manager) this.manager.switchTo('battle');
+  },
   // 成功后：直接开始挑战
   startChallengeFromSuccess() {
     state.showSuccessModal = false;
     state.tab = 'my';
-    if (this.manager) this.manager.switchTo('battle');
+    this.startChallenge();
   },
 
   onPoster() {

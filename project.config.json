@@ -1,8 +1,20 @@
 {
   "description": "不准爆！- 微信小游戏",
   "packOptions": {
-    "ignore": [],
-    "include": []
+    "ignore": [
+      { "type": "folder", "value": "cloudfunctions" },
+      { "type": "folder", "value": "pages" },
+      { "type": "folder", "value": "cloud-connect-mp" },
+      { "type": "file", "value": "app.js" },
+      { "type": "file", "value": "app.json" },
+      { "type": "file", "value": "sitemap.json" }
+    ],
+    "include": [
+      {
+        "type": "folder",
+        "value": "audio"
+      }
+    ]
   },
   "setting": {
     "urlCheck": true,
@@ -15,5 +27,22 @@
   "libVersion": "3.15.1",
   "appid": "wx872511a1f35fb6cf",
   "projectname": "BalloonPop",
-  "condition": {}
+  "cloudfunctionRoot": "cloudfunctions/",
+  "condition": {
+    "game": {
+      "current": 0,
+      "list": [
+        {
+          "name": "模拟支付（无需商户号）",
+          "query": "mockPay=1",
+          "scene": null
+        },
+        {
+          "name": "云开发连通测试",
+          "query": "cloudTest=1",
+          "scene": null
+        }
+      ]
+    }
+  }
 }

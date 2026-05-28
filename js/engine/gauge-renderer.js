@@ -101,9 +101,43 @@ function drawGauge(ctx, cx, cy, SIZE, pressure, targetMin, targetMax, isHidden, 
 
   // ─── 8. 中心打气按钮 (核心交互元素) ──────
   const btnR = SIZE * 0.21;
+  const labelFs = Math.max(10, Math.round(btnR * 0.34));
+
+  function _drawPumpBtnLabel(text, color, alpha) {
+    ctx.save();
+    ctx.font = `600 ${labelFs}px ${UX.font}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color || '#fff';
+    ctx.globalAlpha = alpha != null ? alpha : 1;
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 2;
+    ctx.fillText(text, cx, cy);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  /** 顶部高光：缩小、降透明度；按住时用暖色弱高光，避免白块发脏 */
+  function _drawPumpBtnSpecular(holding) {
+    if (holding) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(cx - btnR * 0.12, cy - btnR * 0.28, btnR * 0.32, btnR * 0.14, -0.12, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,220,200,0.1)';
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(cx - btnR * 0.1, cy - btnR * 0.32, btnR * 0.38, btnR * 0.18, -0.1, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fill();
+    ctx.restore();
+  }
 
   if (isDisabled) {
-    // ── 置灰状态：灰色按钮 +「按住充气」同字号 ──
     ctx.save();
     ctx.beginPath(); ctx.arc(cx, cy + 4, btnR, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fill();
@@ -114,57 +148,50 @@ function drawGauge(ctx, cx, cy, SIZE, pressure, targetMin, targetMax, isHidden, 
     ctx.save();
     ctx.beginPath(); ctx.arc(cx, cy, btnR, 0, Math.PI * 2);
     ctx.fillStyle = disGrad; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.restore();
 
-    ctx.save();
-    ctx.font = `700 14px ${UX.font}`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fillText('按住充气', cx, cy);
-    ctx.restore();
+    _drawPumpBtnLabel('按住充气', 'rgba(255,255,255,0.55)', 1);
     return;
   }
 
   // ── 正常 / 按住状态 ──
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy + 4, btnR, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fill();
   ctx.restore();
 
   const btnGrad = ctx.createLinearGradient(cx, cy - btnR, cx, cy + btnR);
   if (isHolding) {
-    btnGrad.addColorStop(0, '#fb923c'); btnGrad.addColorStop(1, '#e11d48');
+    btnGrad.addColorStop(0, '#f97316');
+    btnGrad.addColorStop(0.55, '#ef4444');
+    btnGrad.addColorStop(1, '#dc2626');
   } else {
-    btnGrad.addColorStop(0, '#818cf8'); btnGrad.addColorStop(1, '#2563eb');
+    btnGrad.addColorStop(0, '#7c8ff5');
+    btnGrad.addColorStop(0.5, '#5b6ee8');
+    btnGrad.addColorStop(1, '#3b5bdb');
   }
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, btnR, 0, Math.PI * 2);
   ctx.fillStyle = btnGrad; ctx.fill();
-  ctx.shadowColor = isHolding ? 'rgba(251,113,133,0.5)' : 'rgba(99,102,241,0.45)';
-  ctx.shadowBlur = 14; ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-  ctx.lineWidth = 2; ctx.stroke(); ctx.shadowBlur = 0;
-  ctx.restore();
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(cx - btnR * 0.15, cy - btnR * 0.35, btnR * 0.55, btnR * 0.32, -0.1, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(cx + btnR * 0.05, cy + btnR * 0.45, btnR * 0.6, btnR * 0.2, 0, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  ctx.font = `700 14px ${UX.font}`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#fff'; ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 4;
-  ctx.fillText('按住充气', cx, cy);
+  ctx.strokeStyle = isHolding ? 'rgba(255,180,160,0.22)' : 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = isHolding ? 'rgba(239,68,68,0.35)' : 'rgba(99,102,241,0.35)';
+  ctx.shadowBlur = 10;
+  ctx.stroke();
   ctx.shadowBlur = 0;
   ctx.restore();
+
+  _drawPumpBtnSpecular(isHolding);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(cx + btnR * 0.04, cy + btnR * 0.42, btnR * 0.45, btnR * 0.14, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.14)';
+  ctx.fill();
+  ctx.restore();
+
+  _drawPumpBtnLabel('按住充气', '#fff', 1);
 
   if (!isHolding) {
     const shimmerAngle = (time * 2.5) % (Math.PI * 2);
@@ -174,8 +201,8 @@ function drawGauge(ctx, cx, cy, SIZE, pressure, targetMin, targetMax, isHidden, 
     const sy = cy + Math.sin(shimmerAngle) * btnR * 1.2;
     const sg = ctx.createLinearGradient(sx - btnR, sy - btnR, sx + btnR, sy + btnR);
     sg.addColorStop(0, 'transparent');
-    sg.addColorStop(0.48, 'rgba(255,255,255,0.2)');
-    sg.addColorStop(0.55, 'rgba(255,255,255,0.15)');
+    sg.addColorStop(0.48, 'rgba(255,255,255,0.08)');
+    sg.addColorStop(0.55, 'rgba(255,255,255,0.06)');
     sg.addColorStop(1, 'transparent');
     ctx.fillStyle = sg;
     ctx.fillRect(cx - btnR, cy - btnR, btnR * 2, btnR * 2);
@@ -184,10 +211,10 @@ function drawGauge(ctx, cx, cy, SIZE, pressure, targetMin, targetMax, isHidden, 
 
   if (isHolding) {
     ctx.save();
-    ctx.globalAlpha = 0.25;
-    ctx.beginPath(); ctx.arc(cx, cy, btnR * 1.08, 0, Math.PI * 2);
-    ctx.strokeStyle = UX.danger; ctx.lineWidth = 3;
-    ctx.shadowColor = UX.danger; ctx.shadowBlur = 18; ctx.stroke(); ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.2;
+    ctx.beginPath(); ctx.arc(cx, cy, btnR * 1.06, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,120,90,0.85)'; ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(239,68,68,0.45)'; ctx.shadowBlur = 12; ctx.stroke(); ctx.shadowBlur = 0;
     ctx.restore();
   }
 }

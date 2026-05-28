@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "云数据库连通测试",
+    "navigationBarBackgroundColor": "#0d0b3a",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#080520"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

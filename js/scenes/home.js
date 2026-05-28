@@ -83,6 +83,14 @@ function _fmtComma(n) {
   return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+function _sumTeamMemberClears(team) {
+  if (!team) return 0;
+  if (Array.isArray(team.members) && team.members.length) {
+    return team.members.reduce((sum, m) => sum + (Number(m && m.dailyClears) || 0), 0);
+  }
+  return Number(team.dailyTotalClears) || 0;
+}
+
 /**
  * 在「一屏适配 ctx.scale(1, scaleY)」区域内绘制方形/比例正确的 icon：
  * 直接用 drawImage(x, y, w, h) 会被纵向压扁（X 不变，Y 乘 scaleY），
@@ -274,7 +282,7 @@ module.exports = {
           const b = BALLOON_TYPES.find(t => t.id === id);
           return b && info && info.quantity > 0;
         })
-        .sort((a, b) => new Date(b[1].acquiredAt || 0) - new Date(a[1].acquiredAt || 0))    // 按获得时间倒序
+        .sort((a, b) => store.parseStoredTime(b[1].acquiredAt) - store.parseStoredTime(a[1].acquiredAt))    // 按获得时间倒序（iOS 安全解析）
         .slice(0, 3)                                                                        // 只展示最近 3 个
         .map(([id,info])=>{
           const bd=BALLOON_TYPES.find(t=>t.id===id);
@@ -292,7 +300,7 @@ module.exports = {
       state.hasTeam = !!team;
       state.teamName = team?team.name:'';
       state.teamMemberCount = team?(team.members?team.members.length:team.memberCount||0):0;
-      state.teamDailyClears = team?(team.dailyTotalClears||0):0;
+      state.teamDailyClears = _sumTeamMemberClears(team);
       state.topTeams = ranked.slice(0,5);
       state.recentBalloons = ownedList;
 
@@ -451,10 +459,10 @@ module.exports = {
     const clearsFs = 12;
     const clearsFw = 400;
     const clearsW = measureText(ctx, clearsStr, clearsFs, clearsFw);
-    const dotX0 = W - padding - 52;                                                                                // 与下方轮播点左对齐
+    const dotX0 = W - padding - 52 - 8;                                                                            // 轮播点左移 8px
     const clearsRight = dotX0 - 8;                                                                                 // 通关文案右缘距圆点区 8px
     const clearsX = clearsRight - clearsW;
-    const nameMaxRight = clearsX - 16;                                                                             // 队名与「通关」固定 16px 间距
+    const nameMaxRight = clearsX - 8;                                                                              // 队名与「通关」间距 8px（超长会截断 + …）
     const nameMaxW = Math.max(12, nameMaxRight - nameStartX);
     const dispName = _truncateByMeasure(ctx, cur.name || '', 12, 400, nameMaxW);
     drawText(ctx, dispName, nameStartX, y + tickH / 2, '#ffffff', 12, 'left', undefined, 400);
@@ -486,7 +494,7 @@ module.exports = {
       const idx = allR.findIndex(x => x.id === myTeam.id);
       if (idx >= 0) rankDisp = 'NO.' + (idx + 1);
     }
-    const totalClearsShow = _fmtComma(state.teamDailyClears * 88 + 9200); // 总通关展示值（系数放大）
+    const totalClearsShow = _fmtComma(state.teamDailyClears);             // 全队成员通关次数总和
     const myContribShow = _fmtComma(state.teamDailyClears * 22 + 400);    // 我的贡献展示值
 
     if (state.hasTeam) {
@@ -893,21 +901,30 @@ module.exports = {
     drawText(ctx, '登录即表示同意《用户协议》和《隐私政策》', W / 2, policyY + policyH / 2, 'rgba(255,255,255,0.32)', 11, 'center', undefined, 400);
   },
   _loginModalAbsorb() { /* 吸收弹窗外的所有点击，阻断穿透 */ },
-  loginWithWeChat() {                          // 主按钮：微信一键登录（当前为 mock，待接真实授权）
+  loginWithWeChat() {
     const scene = this;
-    // TODO(prod)：上线前替换为 wx.getUserProfile / wx.createUserInfoButton 真实授权流程
-    const mockNicks = ['糖果小仙女', '霓虹少年', '气球猎人', '星河旅人', '夜光甜筒', '泡泡先生'];
-    const nickName = mockNicks[Math.floor(Math.random() * mockNicks.length)];
-    store.updateUser({
-      isLoggedIn: true,
-      nickName: nickName,
-      avatar: '',
-      isFirstTime: false
+    const { cloudLogin } = require('../cloud-login');
+    showToast('登录中…');
+    cloudLogin().then((r) => {
+      if (r.ok) {
+        scene._authPromptDone = true;
+        state.showLoginModal = false;
+        scene._refresh();
+        showToast('登录成功');
+        return;
+      }
+      const mockNicks = ['糖果小仙女', '霓虹少年', '气球猎人', '星河旅人', '夜光甜筒', '泡泡先生'];
+      store.updateUser({
+        isLoggedIn: true,
+        nickName: mockNicks[Math.floor(Math.random() * mockNicks.length)],
+        avatar: '',
+        isFirstTime: false
+      });
+      scene._authPromptDone = true;
+      state.showLoginModal = false;
+      scene._refresh();
+      showToast('登录成功（离线）');
     });
-    scene._authPromptDone = true;
-    state.showLoginModal = false;
-    scene._refresh();
-    showToast('登录成功');
   },
   exitMiniProgram() {                          // 副按钮：退出游戏（关闭小程序）
     // 微信小游戏 / 小程序：调用 wx.exitMiniProgram 退到对话列表

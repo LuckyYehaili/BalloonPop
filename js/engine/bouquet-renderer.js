@@ -4,19 +4,25 @@
  */
 const { hexAlpha } = require('./balloon-renderer');
 
-/** 10 个气球在花束中的目标位置（相对区域宽高比例） */
+/** 10 个气球在花束中的目标位置（相对区域宽高比例）；rx 略加大、与下方 RX_SPREAD 配合，减少横向挤在一起 */
 const BOUQUET_SLOTS = [
   { rx: 0.0, ry: -0.12, s: 1.0 },
-  { rx: -0.18, ry: -0.05, s: 0.88 },
-  { rx: 0.18, ry: -0.05, s: 0.88 },
-  { rx: -0.1, ry: -0.2, s: 0.82 },
-  { rx: 0.1, ry: -0.2, s: 0.82 },
-  { rx: -0.24, ry: 0.06, s: 0.78 },
-  { rx: 0.24, ry: 0.06, s: 0.78 },
-  { rx: -0.06, ry: 0.1, s: 0.85 },
-  { rx: 0.06, ry: 0.1, s: 0.85 },
-  { rx: 0.0, ry: -0.26, s: 0.8 }
+  { rx: -0.24, ry: -0.05, s: 0.86 },
+  { rx: 0.24, ry: -0.05, s: 0.86 },
+  { rx: -0.14, ry: -0.2, s: 0.80 },
+  { rx: 0.14, ry: -0.2, s: 0.80 },
+  { rx: -0.34, ry: 0.06, s: 0.76 },
+  { rx: 0.34, ry: 0.06, s: 0.76 },
+  { rx: -0.14, ry: 0.11, s: 0.82 },
+  { rx: 0.14, ry: 0.11, s: 0.82 },
+  { rx: 0.0, ry: -0.26, s: 0.78 }
 ];
+
+/** 水平展开系数（越大越靠边、越不重叠） */
+const BOUQUET_RX_SPREAD = 0.92;
+
+/** 第 10 个气球（列表索引 9，最后绘制、叠在最前）相对其它气球的半径倍率 */
+const BOUQUET_CENTER_BALLOON_RADIUS_MULT = 2;
 
 /** 每个气球的出场起始（从区域外飞入） */
 const FLY_IN_STARTS = [
@@ -28,7 +34,21 @@ const FLY_IN_STARTS = [
 
 const DURATION = 1.6;
 
-function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
+function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor, emoji) {
+  emoji = emoji || '🎈';
+  if (emoji) {
+    ctx.save();
+    ctx.font = Math.round(r * 1.62) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = glowColor || color || 'rgba(255,255,255,0.45)';
+    ctx.shadowBlur = Math.max(6, Math.round(r * 0.28));
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(emoji, cx, cy);
+    ctx.restore();
+    return;
+  }
+
   ctx.save();
   ctx.shadowColor = glowColor;
   ctx.shadowBlur = 3;
@@ -45,10 +65,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.ellipse(cx - r * 0.28, cy - r * 0.28, r * 0.2, r * 0.12, -Math.PI / 4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.fill();
       break;
     case 'heart':
       ctx.save();
@@ -63,10 +79,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.ellipse(-14, -18, 9, 5, -0.4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.fill();
       ctx.restore();
       break;
     case 'star': {
@@ -82,10 +94,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.arc(cx - r * 0.12, cy - r * 0.12, r * 0.16, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.fill();
       break;
     }
     case 'long':
@@ -94,10 +102,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.ellipse(cx - r * 0.12, cy - r * 0.45, r * 0.1, r * 0.18, -0.3, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.fill();
       break;
     case 'animal':
       ctx.beginPath();
@@ -125,10 +129,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.arc(cx, cy + r * 0.1, r * 0.08, 0, Math.PI * 2);
       ctx.fillStyle = '#1a0533';
       ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(cx - r * 0.18, cy - r * 0.28, r * 0.14, r * 0.08, -0.4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.fill();
       break;
     case 'cloud': {
       const cc = [
@@ -140,10 +140,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.ellipse(cx - r * 0.15, cy - r * 0.25, r * 0.12, r * 0.06, -0.3, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.fill();
       break;
     }
     case 'diamond':
@@ -156,13 +152,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - r);
-      ctx.lineTo(cx + r * 0.7, cy);
-      ctx.lineTo(cx, cy - r * 0.08);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.fill();
       break;
     case 'twist':
       ctx.beginPath();
@@ -173,10 +162,6 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.beginPath();
       ctx.ellipse(cx + r * 0.25, cy + r * 0.3, r * 0.38, r * 0.65, 0.35, 0, Math.PI * 2);
       ctx.fillStyle = color + 'cc';
-      ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(cx - r * 0.3, cy - r * 0.45, r * 0.08, r * 0.14, -0.35, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.fill();
       break;
     case 'flower':
@@ -192,7 +177,7 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.shadowBlur = 0;
       ctx.beginPath();
       ctx.arc(cx, cy, r * 0.28, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = color + 'cc';
       ctx.fill();
       break;
     case 'crown':
@@ -220,6 +205,14 @@ function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor) {
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.shadowBlur = 0;
+  }
+  if (emoji) {
+    ctx.shadowBlur = 0;
+    ctx.font = Math.round(r * 0.68) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(emoji, cx, cy);
   }
   ctx.shadowBlur = 0;
   ctx.restore();
@@ -337,9 +330,10 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
 
   for (let i = 0; i < count; i++) {
     const slot = BOUQUET_SLOTS[i] || BOUQUET_SLOTS[0];
-    const targetX = bCx + slot.rx * W * 0.72;
+    const targetX = bCx + slot.rx * W * BOUQUET_RX_SPREAD;
     const targetY = bCy + slot.ry * H * rySpread;
-    const r = baseR * (slot.s || 0.85);
+    const centerMult = i === 9 ? BOUQUET_CENTER_BALLOON_RADIUS_MULT : 1;
+    const r = baseR * (slot.s || 0.85) * centerMult;
     const balloon = list[i] || { shape: 'round', color: '#ff6eb4', glowColor: '#ff6eb4' };
 
     let curX, curY, settleBob = 0;
@@ -360,7 +354,7 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
     }
 
     const drawY = curY + settleBob;
-    drawMiniBalloon(ctx, balloon.shape || 'round', curX, drawY, r, balloon.color || '#ff6eb4', balloon.glowColor || '#ff6eb4');
+    drawMiniBalloon(ctx, balloon.shape || 'round', curX, drawY, r, balloon.color || '#ff6eb4', balloon.glowColor || '#ff6eb4', balloon.emoji);
 
     if (t < 1) {
       if (t > 0.35 + i * 0.03 && t < 0.95) {

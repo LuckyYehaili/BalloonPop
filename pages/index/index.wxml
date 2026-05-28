@@ -1,0 +1,34 @@
+<view class="page">
+  <view class="card env-card">
+    <text class="label">云环境 ID</text>
+    <text class="env-id">{{envId}}</text>
+  </view>
+
+  <view class="card status-card">
+    <text class="status {{loading ? 'loading' : ''}}">{{msg}}</text>
+  </view>
+
+  <block wx:if="{{testUser}}">
+    <view class="card user-card">
+      <text class="section-title">用户数据</text>
+      <view class="row">
+        <text class="row-label">openid</text>
+        <text class="row-value">{{testUser.openid}}</text>
+      </view>
+      <view class="row">
+        <text class="row-label">nickName</text>
+        <text class="row-value">{{testUser.nickName}}</text>
+      </view>
+      <view class="row">
+        <text class="row-label">currentLevel</text>
+        <text class="row-value">{{testUser.currentLevel}}</text>
+      </view>
+    </view>
+  </block>
+
+  <button class="btn-retry" bindtap="onTapRetry" disabled="{{loading}}">
+    {{loading ? '读取中…' : '重新测试'}}
+  </button>
+
+  <text class="hint">测试账号 openid：test_user_001</text>
+</view>

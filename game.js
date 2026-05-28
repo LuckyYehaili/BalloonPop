@@ -1,4 +1,16 @@
 // game.js - 不准爆！微信小游戏主入口
+
+// ─── 云开发（须最先初始化，等同小程序 app.js onLaunch）────────
+if (typeof wx !== 'undefined' && wx.cloud && typeof wx.cloud.init === 'function') {
+  wx.cloud.init({
+    env: 'cloud1-d2geerzff38fc214b',
+    traceUser: true
+  });
+}
+const cloud = require('./js/cloud');
+cloud.markInitialized();
+const db = (typeof wx !== 'undefined' && wx.cloud) ? wx.cloud.database() : null;
+
 const canvas = wx.createCanvas();
 const ctx = canvas.getContext('2d');
 const sysInfo = wx.getSystemInfoSync();
@@ -17,15 +29,28 @@ store.checkDailyReset();
 store.expireGifts();
 store.applyColdStart();
 
-// 全局音频策略：iOS 静音键开着也允许游戏发声，避免「玩家手机静音 → 一切音效失声」。
-// 必须在 createInnerAudioContext 之前调用一次；放在入口启动时最稳。
-if (typeof wx !== 'undefined' && typeof wx.setInnerAudioOption === 'function') {
-  try {
-    wx.setInnerAudioOption({ obeyMuteSwitch: false, mixWithOther: true });
-  } catch (e) {
-    console.warn('[game] setInnerAudioOption failed:', e && e.message);
-  }
+// 静默云登录（拉取/创建 users，失败不阻断进游戏）
+try {
+  require('./js/cloud-login').cloudLogin();
+} catch (e) {
+  console.warn('[game] cloudLogin skipped:', e && e.message);
 }
+
+// 软著/商户号未就绪：开发版默认模拟支付，无需 SUB_MCH_ID
+try {
+  const { useMockPay, isDevelopEnv } = require('./js/platform');
+  if (useMockPay()) {
+    console.log('[BalloonPop] 当前为模拟支付模式（mock_pay）'
+      + (isDevelopEnv() ? '：开发/体验版自动开启' : '：启动参数 mockPay=1')
+      + '。配好商户号后可用 realPay=1 测真支付。');
+  }
+} catch (_) { /* ignore */ }
+
+// 全局音频：iOS 静音键、首次触摸激活
+const { applyInnerAudioOption } = require('./js/audio');
+applyInnerAudioOption();
+
+let _audioTouchUnlocked = false;
 
 // 数字字体 DIN Alternate：远程地址就绪后取消下一行注释，并在小程序后台配置 downloadFile 域名
 // setNumericFontSourceUrl('https://你的域名/fonts/DINAlternate.ttf');
@@ -43,7 +68,8 @@ const scenes = {
   team: require('./js/scenes/team'),
   'team-detail': require('./js/scenes/team-detail'),
   'team-rank': require('./js/scenes/team-rank'),
-  profile: require('./js/scenes/profile')
+  profile: require('./js/scenes/profile'),
+  'cloud-test': require('./js/scenes/cloud-test')
 };
 
 Object.keys(scenes).forEach(name => manager.register(name, scenes[name]));
@@ -70,6 +96,10 @@ function _readLaunchQuery() {
     manager.switchTo('collection');
     return;
   }
+  if (q.cloudTest === '1' || q.scene === 'cloudTest') {
+    manager.switchTo('cloud-test');
+    return;
+  }
   const wantLevelComplete =
     String(q.debugLevelComplete) === '1' ||
     String(q.debugLevelComplete) === 'true' ||
@@ -85,6 +115,10 @@ function _readLaunchQuery() {
 let _touchStartPos = null;
 
 wx.onTouchStart(e => {
+  if (!_audioTouchUnlocked) {
+    _audioTouchUnlocked = true;
+    applyInnerAudioOption();
+  }
   const t = e.touches[0];
   if (!t) return;
   const tx = t.clientX, ty = t.clientY;
@@ -168,6 +202,7 @@ setTimeout(function () {
       '[BalloonPop] 调试「关卡完成」弹窗：\n' +
         '  ① 开发者工具 → 编译旁下拉 → 添加编译模式 → 启动参数填 debugLevelComplete=1 → 选该模式点编译\n' +
         '  ② wx.__BALLOON_DEBUG_LEVEL_COMPLETE() 或 wx.setStorageSync("__BP_DEBUG_LEVEL_COMPLETE","1")\n' +
+        '  ③ 云连通测试：编译模式启动参数 cloudTest=1\n' +
         '  （控制台若报未定义：调试器顶部「JavaScript 上下文」选游戏逻辑线程）'
     );
   } catch (_) {}

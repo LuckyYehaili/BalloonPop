@@ -41,7 +41,11 @@ function getDefaultData() {
     violation: { count: 0, date: '', bannedToday: false },
     ownedBalloons: {},
     equippedLegend: { level1: null, level2: null, level3: null, level4: null },
+    /** 传奇气球已在哪些关卡完成第十个（关卡号 1–4，与气球束一致） */
+    legendUsedByLevel: {},
     clearHistory: [],
+    /** 从本轮首次通关第 1 关起计时，至第 4 关通关写入记录后清零 */
+    fullRunAnchorMs: 0,
     bouquetCollection: [],
     transactions: [],
     pendingGifts: [],
@@ -58,7 +62,18 @@ function getDefaultData() {
 
 function _todayStr() { const d = new Date(); const Y = d.getFullYear(); const M = String(d.getMonth()+1).padStart(2,'0'); const D = String(d.getDate()).padStart(2,'0'); return Y+'-'+M+'-'+D; }
 function _now() { return Date.now(); }
-function _timestamp() { return new Date().toISOString().replace('T',' ').slice(0,19); }
+/** iOS 不支持 "yyyy-MM-dd HH:mm:ss"（中间空格），用 ISO 子集 yyyy-MM-ddTHH:mm:ss */
+function _timestamp() { return new Date().toISOString().slice(0, 19); }
+/** 解析存档时间：兼容旧数据空格格式与新数据 T 格式 */
+function parseStoredTime(str) {
+  if (str == null || str === '') return 0;
+  if (typeof str === 'number') return str;
+  const s = String(str).trim();
+  if (!s) return 0;
+  const normalized = s.indexOf('T') >= 0 ? s : s.replace(/^(\d{4}-\d{2}-\d{2})\s+/, '$1T');
+  const t = new Date(normalized).getTime();
+  return isNaN(t) ? 0 : t;
+}
 function _deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
 let _cache = null;
@@ -86,6 +101,7 @@ function _load() {
         e.frozenGiftId = e.frozenGiftIds[0] || null;
       }
       if (!data.equippedLegend) data.equippedLegend = def.equippedLegend;
+      if (!data.legendUsedByLevel) data.legendUsedByLevel = def.legendUsedByLevel;
       if (!data.user) data.user = def.user;
       _cache = data;
       return data;
@@ -200,8 +216,80 @@ function removeBalloon(bId,qty) { const d=_load(); const e=d.ownedBalloons&&d.ow
 function hasBalloon(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e&&e.quantity>0; }
 function getBalloonQuantity(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e?e.quantity:0; }
 
+function _legendUsedLevelsFromBouquets(d, bId) {
+  const levels = [];
+  for (const bq of d.bouquetCollection || []) {
+    const lv = bq.level;
+    if (!lv) continue;
+    for (const b of bq.balloons || []) {
+      if (!b.isPaid) continue;
+      const id = b.balloonId;
+      if (id === bId && !levels.includes(lv)) levels.push(lv);
+    }
+  }
+  return levels.sort((a, b) => a - b);
+}
+
+function getLegendUsedLevels(bId) {
+  const d = _load();
+  const levels = new Set();
+  const stored = d.legendUsedByLevel && d.legendUsedByLevel[bId];
+  if (stored != null) {
+    (Array.isArray(stored) ? stored : [stored]).forEach((lv) => {
+      if (lv >= 1 && lv <= 4) levels.add(lv);
+    });
+  }
+  _legendUsedLevelsFromBouquets(d, bId).forEach((lv) => levels.add(lv));
+  return Array.from(levels).sort((a, b) => a - b);
+}
+
+function canEquipLegend(levelIndex, bId) {
+  const d = _load();
+  const e = d.ownedBalloons && d.ownedBalloons[bId];
+  if (!e || _availableQty(e) < 1) return { ok: false, reason: '未拥有' };
+  const levelNum = levelIndex + 1;
+  const used = getLegendUsedLevels(bId);
+  const avail = _availableQty(e);
+  if (used.includes(levelNum)) return { ok: false, reason: '已充气' };
+  if (used.length >= avail) return { ok: false, reason: '已充气' };
+  return { ok: true };
+}
+
+function markLegendUsedInLevel(bId, levelNum) {
+  if (!bId || !levelNum) return;
+  const d = _load();
+  if (!d.legendUsedByLevel) d.legendUsedByLevel = {};
+  if (!d.legendUsedByLevel[bId]) d.legendUsedByLevel[bId] = [];
+  const arr = d.legendUsedByLevel[bId];
+  if (!arr.includes(levelNum)) arr.push(levelNum);
+  validateEquippedLegends();
+  _save();
+}
+
+function validateEquippedLegends() {
+  const d = _load();
+  let changed = false;
+  for (let i = 0; i < 4; i++) {
+    const k = 'level' + (i + 1);
+    const id = d.equippedLegend[k];
+    if (!id) continue;
+    if (!canEquipLegend(i, id).ok) {
+      d.equippedLegend[k] = null;
+      changed = true;
+    }
+  }
+  if (changed) _save();
+}
+
 function getEquippedLegend(levelIndex) { const k='level'+(levelIndex+1); const d=_load(); return d.equippedLegend[k]||null; }
-function equipLegend(levelIndex,bId) { const d=_load(); const k='level'+(levelIndex+1); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||_availableQty(e)<1)return false; d.equippedLegend[k]=bId; _save(); return true; }
+function equipLegend(levelIndex,bId) {
+  if (!canEquipLegend(levelIndex, bId).ok) return false;
+  const d=_load();
+  const k='level'+(levelIndex+1);
+  d.equippedLegend[k]=bId;
+  _save();
+  return true;
+}
 function unequipLegend(levelIndex) { const d=_load(); const k='level'+(levelIndex+1); d.equippedLegend[k]=null; _save(); }
 
 function getUnlockedLevels() { return _deepClone(_get('unlockedLevels')||[1]); }
@@ -225,6 +313,7 @@ function resetChallengeProgress() {
   d.progress = { currentLevel: 1, completedBalloons: 0, balloonIndex: 0 };
   d.freeRetries = { level1: 3, level2: 3, level3: 3, level4: 3 };
   d.equippedLegend = { level1: null, level2: null, level3: null, level4: null };
+  d.fullRunAnchorMs = 0;
   _save();
 }
 
@@ -260,13 +349,39 @@ function checkViolation() { const d=_load(); if(d.fullClearCount>=3&&d.lastFullC
 function isBanned() { const d=_load(); return d.violation.bannedToday||false; }
 
 function addClearRecord(rec) { const d=_load(); if(!d.clearHistory)d.clearHistory=[]; d.clearHistory.unshift({...rec,time:_timestamp(),id:'clear_'+_now()+'_'+Math.random().toString(36).slice(2,6)}); if(d.clearHistory.length>200)d.clearHistory=d.clearHistory.slice(0,200); _save(); }
-function getClearHistory(filter) { const d=_load(); let list=d.clearHistory||[]; if(filter){if(filter.level)list=list.filter(r=>r.level===filter.level);if(filter.days){const c=_now()-filter.days*86400000;list=list.filter(r=>new Date(r.time).getTime()>=c);}} return _deepClone(list); }
+function getClearHistory(filter) { const d=_load(); let list=d.clearHistory||[]; if(filter){if(filter.level)list=list.filter(r=>r.level===filter.level);if(filter.days){const c=_now()-filter.days*86400000;list=list.filter(r=>parseStoredTime(r.time)>=c);}} return _deepClone(list); }
+function getFullClearRunHistory() { const d=_load(); return _deepClone((d.clearHistory||[]).filter(r => r.isFullRun)); }
 
-function addBouquet(bq) { const d=_load(); if(!d.bouquetCollection)d.bouquetCollection=[]; d.bouquetCollection.unshift({...bq,sn:'bq_'+_now()+'_'+Math.random().toString(36).slice(2,6),time:_timestamp(),starred:false}); if(d.bouquetCollection.length>100)d.bouquetCollection=d.bouquetCollection.slice(0,100); _save(); }
+function setFullRunAnchorIfNeeded() {
+  const d = _load();
+  if (d.fullRunAnchorMs) return;
+  d.fullRunAnchorMs = _now();
+  _save();
+}
+function clearFullRunAnchor() {
+  const d = _load();
+  d.fullRunAnchorMs = 0;
+  _save();
+}
+function getFullRunAnchorMs() {
+  return _load().fullRunAnchorMs || 0;
+}
+
+function addBouquet(bq) {
+  const d=_load();
+  if(!d.bouquetCollection)d.bouquetCollection=[];
+  d.bouquetCollection.unshift({...bq,sn:'bq_'+_now()+'_'+Math.random().toString(36).slice(2,6),time:_timestamp(),starred:false});
+  if(d.bouquetCollection.length>100)d.bouquetCollection=d.bouquetCollection.slice(0,100);
+  if (bq.hasLegend && bq.balloons) {
+    const paid = bq.balloons.find(b => b.isPaid && b.balloonId);
+    if (paid && paid.balloonId) markLegendUsedInLevel(paid.balloonId, bq.level);
+  }
+  _save();
+}
 function getBouquets() { return _deepClone(_get('bouquetCollection')||[]); }
 function toggleBouquetStar(sn) { const d=_load(); const bq=(d.bouquetCollection||[]).find(b=>b.sn===sn); if(bq){bq.starred=!bq.starred;_save();} }
 
-function addTransaction(tx) { const d=_load(); if(!d.transactions)d.transactions=[]; d.transactions.unshift({...tx,time:_timestamp()}); const c=_now()-30*86400000; d.transactions=d.transactions.filter(t=>new Date(t.time).getTime()>=c); if(d.transactions.length>200)d.transactions=d.transactions.slice(0,200); _save(); }
+function addTransaction(tx) { const d=_load(); if(!d.transactions)d.transactions=[]; d.transactions.unshift({...tx,time:_timestamp()}); const c=_now()-30*86400000; d.transactions=d.transactions.filter(t=>parseStoredTime(t.time)>=c); if(d.transactions.length>200)d.transactions=d.transactions.slice(0,200); _save(); }
 function getTransactions(filter) { const d=_load(); let list=d.transactions||[]; if(filter&&filter.type)list=list.filter(t=>t.type===filter.type); return _deepClone(list); }
 
 function createGift(balloonIds,toOpenid,note) { const d=_load(); if(balloonIds.length>10)return{ok:false,reason:'批量赠送最多10个'}; if((d.dailyCounters.giftSendCount||0)>=20)return{ok:false,reason:'今日赠送已达上限(20个)'}; for(const bid of balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(!e||_availableQty(e)<1)return{ok:false,reason:'可赠送气球不足:'+bid};if(!e.giftable)return{ok:false,reason:'该气球不可转赠:'+bid};} const giftId='gift_'+_now()+'_'+Math.random().toString(36).slice(2,8); for(const bid of balloonIds){const e=d.ownedBalloons[bid];if(!Array.isArray(e.frozenGiftIds))e.frozenGiftIds=[];e.frozenQuantity=_frozenQty(e)+1;e.frozenGiftIds.push(giftId);_syncFrozenFields(e);} if(!d.pendingGifts)d.pendingGifts=[]; d.pendingGifts.push({giftId,balloonIds,from:d.user.openid,fromName:d.user.nickName,to:toOpenid||null,note:note||'送你专属气球',createdAt:_now(),expiresAt:_now()+24*3600000,status:'pending'}); d.dailyCounters.giftSendCount=(d.dailyCounters.giftSendCount||0)+balloonIds.length; _save(); return{ok:true,giftId}; }
@@ -307,12 +422,14 @@ module.exports = {
   checkDailyReset,
   getOwnedBalloons, getOwnedBalloonList, addBalloon, removeBalloon, hasBalloon, getBalloonQuantity,
   getEquippedLegend, equipLegend, unequipLegend,
+  getLegendUsedLevels, canEquipLegend, markLegendUsedInLevel, validateEquippedLegends,
   getUnlockedLevels, unlockLevel, isLevelUnlocked, getLastPlayedLevel, setLastPlayedLevel,
   getProgress, setProgress, resetInLevelProgress, applyColdStart, resetChallengeProgress,
   reunlockLevelsFromOwnedCommonBalloons, abandonChallengeResetProgress,
   getFreeRetries, useFreeRetry, addFreeRetries,
   canRecordFullClear, recordFullClear, checkViolation, isBanned,
-  addClearRecord, getClearHistory,
+  addClearRecord, getClearHistory, getFullClearRunHistory,
+  setFullRunAnchorIfNeeded, clearFullRunAnchor, getFullRunAnchorMs,
   addBouquet, getBouquets, toggleBouquetStar,
   addTransaction, getTransactions,
   createGift, claimGift, expireGifts, getPendingGifts,
@@ -322,5 +439,6 @@ module.exports = {
   incrementCounter, getCounter, canDoAction,
   getLegendTotalCollected, getHighestLevel, getTodayClears,
   setNotificationAuthorized, isNotificationAuthorized,
-  requestAccountDeletion
+  requestAccountDeletion,
+  parseStoredTime
 };
