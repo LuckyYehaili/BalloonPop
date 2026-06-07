@@ -34,6 +34,47 @@ const FLY_IN_STARTS = [
 
 const DURATION = 1.6;
 
+/** 计算花束锚点；layout=centered 时在区域内垂直居中（缩略图/卡片） */
+function _computeBouquetLayout(x, y, w, h, count, layout) {
+  const W = w;
+  const H = h;
+  const bCx = x + W * 0.5;
+  const tall = H > W * 1.08;
+  const centered = layout === 'centered';
+  let bCy = y + H * (centered ? (tall ? 0.40 : 0.42) : (tall ? 0.29 : 0.35));
+  const ribbonBelow = W * 0.08 * 1.65 + 6;
+  let bowY = y + H * (centered ? (tall ? 0.76 : 0.74) : (tall ? 0.70 : 0.65));
+  if (bowY + ribbonBelow > y + H) {
+    bowY = Math.max(y + H * 0.48, y + H - ribbonBelow);
+  }
+  const rySpread = tall ? 0.68 : 0.63;
+  const baseR = Math.min(W, H) * 0.138;
+
+  if (centered && count > 0) {
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (let i = 0; i < count; i++) {
+      const slot = BOUQUET_SLOTS[i] || BOUQUET_SLOTS[0];
+      const targetY = bCy + slot.ry * H * rySpread;
+      const centerMult = i === 9 ? BOUQUET_CENTER_BALLOON_RADIUS_MULT : 1;
+      const r = baseR * (slot.s || 0.85) * centerMult;
+      const topPad = i === 9 ? 1.5 : 1.2;
+      top = Math.min(top, targetY - r * topPad);
+      bottom = Math.max(bottom, targetY + r * 0.55);
+    }
+    const bowSize = W * 0.08;
+    bottom = Math.max(bottom, bowY + bowSize * 1.65 + 4);
+    let shiftY = (y + H / 2) - (top + bottom) / 2;
+    const margin = 6;
+    if (top + shiftY < y + margin) shiftY = y + margin - top;
+    if (bottom + shiftY > y + H - margin) shiftY = y + H - margin - bottom;
+    bCy += shiftY;
+    bowY += shiftY;
+  }
+
+  return { bCx, bCy, bowY, rySpread, baseR };
+}
+
 function drawMiniBalloon(ctx, shape, cx, cy, r, color, glowColor, emoji) {
   emoji = emoji || '🎈';
   if (emoji) {
@@ -299,8 +340,9 @@ function drawStringToBow(ctx, curX, curY, r, bCx, bowY, alphaOrStroke) {
  * @param {Array<{shape?:string,color?:string,glowColor?:string}>} balloons
  * @param {number} x,y,w,h 弹窗内花束区域（逻辑像素）
  * @param {number} elapsedSec 从 bouquetAnimStartMs 起算秒数
+ * @param {{ layout?: 'default'|'centered', offsetY?: number }} [opts]
  */
-function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
+function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec, opts) {
   const list = balloons || [];
   const count = Math.min(list.length, 10);
   if (count === 0 || w < 8 || h < 8) return;
@@ -308,6 +350,7 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
   const elapsed = Math.max(0, elapsedSec || 0);
   const t = Math.min(elapsed / DURATION, 1);
   const idleT = Math.max(0, elapsed - DURATION);
+  const layout = (opts && opts.layout) || 'default';
 
   ctx.save();
   ctx.beginPath();
@@ -316,17 +359,12 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
 
   const W = w;
   const H = h;
-  const bCx = x + W * 0.5;
-  const tall = H > W * 1.08;
-  // 略下移花束重心，减少区域底部相对统计条的留白
-  const bCy = y + H * (tall ? 0.29 : 0.35);
-  const ribbonBelow = W * 0.08 * 1.65 + 6;
-  let bowY = y + H * (tall ? 0.70 : 0.65);
-  if (bowY + ribbonBelow > y + H) {
-    bowY = Math.max(y + H * 0.48, y + H - ribbonBelow);
+  let { bCx, bCy, bowY, rySpread, baseR } = _computeBouquetLayout(x, y, w, h, count, layout);
+  const offsetY = (opts && opts.offsetY) || 0;
+  if (offsetY) {
+    bCy += offsetY;
+    bowY += offsetY;
   }
-  const rySpread = tall ? 0.68 : 0.63;
-  const baseR = Math.min(W, H) * 0.138;
 
   for (let i = 0; i < count; i++) {
     const slot = BOUQUET_SLOTS[i] || BOUQUET_SLOTS[0];
@@ -378,4 +416,10 @@ function drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, elapsedSec) {
   ctx.restore();
 }
 
-module.exports = { drawBouquetCompletionAnim };
+/** 花束静止帧（分享图、缩略图）；默认在区域内垂直居中 */
+function drawBouquetStillFrame(ctx, balloons, x, y, w, h, opts) {
+  const layout = (opts && opts.layout) || 'centered';
+  drawBouquetCompletionAnim(ctx, balloons, x, y, w, h, 2.6, { layout });
+}
+
+module.exports = { drawBouquetCompletionAnim, drawBouquetStillFrame };

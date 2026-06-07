@@ -1,0 +1,10 @@
+{
+  "permissions": { "openapi": [] },
+  "triggers": [
+    {
+      "name": "settleTeamRankSunday9",
+      "type": "timer",
+      "config": "0 0 9 * * 0 *"
+    }
+  ]
+}

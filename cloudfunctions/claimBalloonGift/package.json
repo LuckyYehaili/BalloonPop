@@ -1,0 +1,9 @@
+{
+  "name": "claimBalloonGift",
+  "version": "1.0.0",
+  "description": "claim balloon gift and credit receiver inventory",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

@@ -86,14 +86,31 @@ function _readLaunchQuery() {
 }
 (function _initialSceneFromLaunch() {
   const q = _readLaunchQuery();
+  const cloudLoginApi = require('./js/cloud-login');
+  /** 深链/领取等需 OPENID 同步后再调云函数，避免与静默 login 竞态 */
+  function _whenLoggedIn(fn) {
+    return cloudLoginApi.cloudLogin().finally(fn);
+  }
+  if (q.teamId) {
+    _whenLoggedIn(() => {
+      manager.switchTo('team', {
+        autoJoinTeamId: String(q.teamId),
+        inviteToken: q.inviteToken ? String(q.inviteToken) : ''
+      });
+    });
+    return;
+  }
+  const bouquetShare = require('./js/bouquet-share').parseBouquetShareFromQuery(q);
+  if (bouquetShare) {
+    manager.switchTo('home', { bouquetShare });
+    return;
+  }
   if (q.giftId) {
-    manager.switchTo('collection');
-    const result = store.claimGift(String(q.giftId));
-    showToast(result.ok ? '领取成功，已存入图鉴' : (result.reason || '领取失败'));
+    manager.switchTo('collection', { incomingGiftId: String(q.giftId) });
     return;
   }
   if (q.scene === 'collection') {
-    manager.switchTo('collection');
+    manager.switchTo('collection', { activeTab: 'legend' });
     return;
   }
   if (q.cloudTest === '1' || q.scene === 'cloudTest') {

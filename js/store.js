@@ -13,14 +13,14 @@ function _generateMockTeams(count) {
   const teams = [];
   for (let i = 0; i < count; i++) {
     const memberCount = 8 + Math.floor(Math.random() * 13);
-    const dailyClears = Math.floor(Math.random() * 500) + 50;
+    const periodClears = Math.floor(Math.random() * 500) + 50;
     teams.push({
       id: 'mock_team_' + (i + 1),
       name: MOCK_TEAM_NAMES[i % MOCK_TEAM_NAMES.length],
       leaderName: '玩家' + (i + 100),
       memberCount,
-      dailyTotalClears: dailyClears,
-      avgClears: Math.round(dailyClears / memberCount * 100) / 100,
+      periodClears: periodClears,
+      avgClears: Math.round(periodClears / memberCount * 100) / 100,
       createdAt: Date.now() - Math.random() * 86400000 * 30
     });
   }
@@ -130,62 +130,14 @@ function checkDailyReset() {
     data.lastFullClearTime = 0;
     data.dailyCounters = { date: today, adWatchCount: 0, giftSendCount: 0, giftReceiveCount: 0, createTeamCount: 0, joinTeamCount: 0, leaveTeamCount: 0, renameTeamCount: 0, adSkipCount: 0 };
     if (data.violation.date !== today) { data.violation.count = 0; data.violation.date = today; data.violation.bannedToday = false; }
-    if (data.team && data.team.members) { data.team.members.forEach(m => { m.dailyClears = 0; }); data.team.dailyTotalClears = 0; }
+    // 战队周期积分按自然周统计，不在日切清零（见 team_period_stats）
     data.progress.completedBalloons = 0;
     data.progress.balloonIndex = 0;
-    _checkRankSettle(today, lastDate);
     data._lastActiveDate = today;
     _save();
-    _regenerateMockData(data);
     return true;
   }
   return false;
-}
-
-function _checkRankSettle(today, lastDate) {
-  const data = _load();
-  if (data._rankRewardsClaimed[today]) return;
-  const now = new Date();
-  if (now.getHours() < 9) return;
-  const ranked = getRankedTeams().slice(0, 5);
-  if (data.team) {
-    const myRank = ranked.findIndex(t => t.id === data.team.id);
-    if (myRank >= 0 && myRank < 5) {
-      const rank = myRank + 1;
-      const rewardCount = rank === 1 ? 2 : 1;
-      const rewards = _grantRankReward(data, rewardCount);
-      data._rankRewardsClaimed[today] = { teamId: data.team.id, rank, rewards };
-      rewards.forEach(r => { data.transactions.push({ type: 'rank_reward', balloonId: r.id, quantity: 1, counterparty: '', time: _timestamp(), status: 'success' }); });
-    }
-  }
-}
-
-function _grantRankReward(data, count) {
-  const { BALLOON_TYPES } = require('./balloons');
-  const legends = BALLOON_TYPES.filter(b => b.isPaid);
-  const owned = data.ownedBalloons || {};
-  const unowned = legends.filter(l => !owned[l.id] || owned[l.id].quantity === 0);
-  const pool = unowned.length > 0 ? unowned : legends;
-  const rewards = [];
-  for (let i = 0; i < count; i++) {
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    _addBalloonRaw(data, pick.id, 1, 'rank_reward');
-    rewards.push(pick);
-  }
-  return rewards;
-}
-
-function _regenerateMockData(data) {
-  data.allTeams = _generateMockTeams(20);
-  if (data.team) {
-    data.allTeams.push({
-      id: data.team.id, name: data.team.name, leaderName: data.user.nickName,
-      memberCount: data.team.members ? data.team.members.length : 1,
-      dailyTotalClears: data.team.dailyTotalClears || 0,
-      avgClears: data.team.members ? Math.round((data.team.dailyTotalClears||0)/data.team.members.length*100)/100 : 0,
-      createdAt: data.team.createdAt
-    });
-  }
 }
 
 function _addBalloonRaw(data, balloonId, quantity, source) {
@@ -212,9 +164,63 @@ function _syncFrozenFields(e) {
 function getOwnedBalloons() { return _deepClone(_get('ownedBalloons')||{}); }
 function getOwnedBalloonList() { const d=_load(); const m=d.ownedBalloons||{}; return Object.keys(m).map(id=>({id,...m[id]})); }
 function addBalloon(bId,qty,src) { const d=_load(); _addBalloonRaw(d,bId,qty,src); _save(); }
+
+/** 登录后合并云端 balloon_inventory（含 purchase / gift） */
+function mergeInventoryFromCloud(records) {
+  if (!records || !records.length) return;
+  const d = _load();
+  let changed = false;
+  for (const rec of records) {
+    const bId = rec.balloonId;
+    if (!bId) continue;
+    const cloudCount = Math.max(0, rec.count != null ? rec.count : (rec.quantity || 0));
+    if (cloudCount <= 0) continue;
+    const isPurchase = rec.source === 'purchase';
+    const giftable = rec.giftable === true;
+    const src = isPurchase ? 'purchase' : 'gift_received';
+    const e = d.ownedBalloons && d.ownedBalloons[bId];
+    if (!e) {
+      _addBalloonRaw(d, bId, cloudCount, src);
+      d.ownedBalloons[bId].giftable = isPurchase && giftable;
+      changed = true;
+    } else {
+      let rowChanged = false;
+      if (e.quantity !== cloudCount) {
+        e.quantity = cloudCount;
+        rowChanged = true;
+      }
+      const wantGiftable = isPurchase && giftable;
+      if (!!e.giftable !== wantGiftable) {
+        e.giftable = wantGiftable;
+        rowChanged = true;
+      }
+      if (rowChanged) {
+        _syncFrozenFields(e);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    validateEquippedLegends();
+    _save();
+  }
+}
+
+/** @deprecated 使用 mergeInventoryFromCloud */
+function mergePurchasedInventoryFromCloud(records) {
+  mergeInventoryFromCloud(records);
+}
+
 function removeBalloon(bId,qty) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; if(!e||_availableQty(e)<qty)return false; e.quantity-=qty; _syncFrozenFields(e); if(e.quantity<=0){delete d.ownedBalloons[bId];for(const k in d.equippedLegend){if(d.equippedLegend[k]===bId)d.equippedLegend[k]=null;}} else if(_availableQty(e)<=0){for(const k in d.equippedLegend){if(d.equippedLegend[k]===bId)d.equippedLegend[k]=null;}}_save();return true; }
 function hasBalloon(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e&&e.quantity>0; }
 function getBalloonQuantity(bId) { const d=_load(); const e=d.ownedBalloons&&d.ownedBalloons[bId]; return e?e.quantity:0; }
+
+/** 手动合成可选数量：已拥有且未冻结即可，关卡充气/通关气球束不影响 */
+function getSynEligibleQuantity(bId) {
+  const d = _load();
+  const e = d.ownedBalloons && d.ownedBalloons[bId];
+  return _availableQty(e);
+}
 
 function _legendUsedLevelsFromBouquets(d, bId) {
   const levels = [];
@@ -343,7 +349,7 @@ function useFreeRetry(lv) { const d=_load(); const k='level'+lv; if((d.freeRetri
 function addFreeRetries(lv,count,maxTotal) { const d=_load(); const k='level'+lv; const cur=d.freeRetries[k]||0; d.freeRetries[k]=Math.min(cur+count,maxTotal||5); _save(); return d.freeRetries[k]; }
 
 function canRecordFullClear() { const d=_load(); const elapsed=_now()-(d.lastFullClearTime||0); if(elapsed<10*60*1000)return {ok:false,reason:'间隔不足10分钟'}; if(d.fullClearCount>=20)return {ok:false,reason:'今日已达20次上限'}; if(d.violation.bannedToday)return {ok:false,reason:'今日已被封禁排名资格'}; return {ok:true}; }
-function recordFullClear() { const c=canRecordFullClear(); if(!c.ok)return c; const d=_load(); d.fullClearCount++; d.lastFullClearTime=_now(); if(d.team){d.team.dailyTotalClears=(d.team.dailyTotalClears||0)+1;const me=d.team.members.find(m=>m.openid===d.user.openid);if(me)me.dailyClears=(me.dailyClears||0)+1;}_save();return {ok:true,count:d.fullClearCount}; }
+function recordFullClear() { const c=canRecordFullClear(); if(!c.ok)return c; const d=_load(); d.fullClearCount++; d.lastFullClearTime=_now(); if(d.team){d.team.periodClears=(d.team.periodClears||0)+1;const me=d.team.members.find(m=>m.openid===d.user.openid);if(me)me.periodClears=(me.periodClears||0)+1;}_save();return {ok:true,count:d.fullClearCount}; }
 
 function checkViolation() { const d=_load(); if(d.fullClearCount>=3&&d.lastFullClearTime>0){d.violation.count=(d.violation.count||0)+1;if(d.violation.count>=5)d.violation.bannedToday=true;_save();} }
 function isBanned() { const d=_load(); return d.violation.bannedToday||false; }
@@ -372,7 +378,7 @@ function addBouquet(bq) {
   if(!d.bouquetCollection)d.bouquetCollection=[];
   d.bouquetCollection.unshift({...bq,sn:'bq_'+_now()+'_'+Math.random().toString(36).slice(2,6),time:_timestamp(),starred:false});
   if(d.bouquetCollection.length>100)d.bouquetCollection=d.bouquetCollection.slice(0,100);
-  if (bq.hasLegend && bq.balloons) {
+  if (bq.hasLegend && bq.balloons && !bq.isSynthesized && bq.level >= 1) {
     const paid = bq.balloons.find(b => b.isPaid && b.balloonId);
     if (paid && paid.balloonId) markLegendUsedInLevel(paid.balloonId, bq.level);
   }
@@ -393,12 +399,48 @@ function _unfreezeGiftBalloons(d,g) { for(const bid of g.balloonIds){const e=d.o
 function _consumeGiftBalloons(d,g) { for(const bid of g.balloonIds){const e=d.ownedBalloons&&d.ownedBalloons[bid];if(e&&Array.isArray(e.frozenGiftIds)&&e.frozenGiftIds.includes(g.giftId)){e.frozenQuantity=Math.max(0,_frozenQty(e)-1);e.frozenGiftIds=e.frozenGiftIds.filter(id=>id!==g.giftId);e.quantity=Math.max(0,(e.quantity||0)-1);_syncFrozenFields(e);if(e.quantity<=0)delete d.ownedBalloons[bid];}} }
 function getPendingGifts() { return _deepClone(_get('pendingGifts')||[]); }
 
-function createTeam(name) { const d=_load(); if(d.team)return{ok:false,reason:'已加入战队'}; if((d.dailyCounters.createTeamCount||0)>=1)return{ok:false,reason:'今日创建次数已达上限'}; const tid='team_'+_now()+'_'+Math.random().toString(36).slice(2,6); d.team={id:tid,name,description:'',leaderId:d.user.openid,createdAt:_now(),memberCount:1,dailyTotalClears:0,qrCode:'',members:[{openid:d.user.openid,nickName:d.user.nickName,joinedAt:_now(),isLeader:true,dailyClears:0,showStats:true,notifyOn:d.settings.notificationOn||false}]}; d.dailyCounters.createTeamCount=(d.dailyCounters.createTeamCount||0)+1; d.lastPlayedLevel=1; _save(); return{ok:true,teamId:tid}; }
-function joinTeam(tid) { const d=_load(); if(d.team)return{ok:false,reason:'已加入战队'}; if((d.dailyCounters.joinTeamCount||0)>=1)return{ok:false,reason:'今日加入次数已达上限'}; const t=d.allTeams.find(t=>t.id===tid); if(!t)return{ok:false,reason:'战队不存在'}; if(t.memberCount>=20)return{ok:false,reason:'战队人数已满'}; d.team={id:t.id,name:t.name,description:'',leaderId:t.leaderName||'unknown',createdAt:t.createdAt||_now(),memberCount:t.memberCount+1,dailyTotalClears:t.dailyTotalClears||0,qrCode:'',members:[{openid:d.user.openid,nickName:d.user.nickName,joinedAt:_now(),isLeader:false,dailyClears:0,showStats:true,notifyOn:d.settings.notificationOn||false}]}; d.dailyCounters.joinTeamCount=(d.dailyCounters.joinTeamCount||0)+1; _save(); return{ok:true}; }
+function createTeam(name) { const d=_load(); if(d.team)return{ok:false,reason:'已加入战队'}; if((d.dailyCounters.createTeamCount||0)>=1)return{ok:false,reason:'今日创建次数已达上限'}; const tid='team_'+_now()+'_'+Math.random().toString(36).slice(2,6); d.team={id:tid,name,description:'',leaderId:d.user.openid,createdAt:_now(),memberCount:1,periodClears:0,qrCode:'',members:[{openid:d.user.openid,nickName:d.user.nickName,joinedAt:_now(),isLeader:true,periodClears:0,showStats:true,notifyOn:d.settings.notificationOn||false}]}; d.dailyCounters.createTeamCount=(d.dailyCounters.createTeamCount||0)+1; d.lastPlayedLevel=1; _save(); return{ok:true,teamId:tid}; }
+function joinTeam(tid) { const d=_load(); if(d.team)return{ok:false,reason:'已加入战队'}; if((d.dailyCounters.joinTeamCount||0)>=1)return{ok:false,reason:'今日加入次数已达上限'}; const t=d.allTeams.find(t=>t.id===tid); if(!t)return{ok:false,reason:'战队不存在'}; if(t.memberCount>=20)return{ok:false,reason:'战队人数已满'}; d.team={id:t.id,name:t.name,description:'',leaderId:t.leaderName||'unknown',createdAt:t.createdAt||_now(),memberCount:t.memberCount+1,periodClears:t.periodClears||0,qrCode:'',members:[{openid:d.user.openid,nickName:d.user.nickName,joinedAt:_now(),isLeader:false,periodClears:0,showStats:true,notifyOn:d.settings.notificationOn||false}]}; d.dailyCounters.joinTeamCount=(d.dailyCounters.joinTeamCount||0)+1; _save(); return{ok:true}; }
 function leaveTeam() { const d=_load(); if(!d.team)return{ok:false,reason:'未加入战队'}; if((d.dailyCounters.leaveTeamCount||0)>=1)return{ok:false,reason:'今日退出次数已达上限'}; d.dailyCounters.leaveTeamCount=(d.dailyCounters.leaveTeamCount||0)+1; d.team=null; _save(); return{ok:true}; }
-function getTeam() { return _deepClone(_get('team')); }
-function getAllTeams() { return _deepClone(_get('allTeams')||[]); }
-function getRankedTeams() { const d=_load(); const ts=(d.allTeams||[]).slice(); const e=ts.filter(t=>t.memberCount>=10); e.sort((a,b)=>{if(b.dailyTotalClears!==a.dailyTotalClears)return b.dailyTotalClears-a.dailyTotalClears;return b.avgClears-a.avgClears;}); return e.map((t,i)=>({...t,rank:i+1})); }
+function _isMockTeamId(id) {
+  return !id || String(id).indexOf('mock_team_') === 0;
+}
+
+function applyCloudTeamSync(payload) {
+  const d = _load();
+  const p = payload || {};
+  d._cloudTeam = p.team != null ? p.team : null;
+  d._cloudRanked = p.ranked || [];
+  d._cloudRecommendTeams = p.recommend != null ? p.recommend : (p.allTeams || []);
+  d._teamsFromCloud = p.teamsFromCloud !== false;
+  d.team = d._cloudTeam;
+  _save();
+}
+
+function getTeam() {
+  const d = _load();
+  if (d._cloudTeam !== undefined) return d._cloudTeam ? _deepClone(d._cloudTeam) : null;
+  return _deepClone(d.team || null);
+}
+function getAllTeams() {
+  return getRecommendTeams();
+}
+function getRankedTeams() {
+  const d = _load();
+  if (d._teamsFromCloud) return _deepClone(d._cloudRanked || []);
+  const ts = (d.allTeams || []).slice().filter((t) => !_isMockTeamId(t.id));
+  const e = ts.filter(t => (t.memberCount || 0) >= 1);
+  e.sort((a, b) => {
+    if ((b.periodClears || 0) !== (a.periodClears || 0)) return (b.periodClears || 0) - (a.periodClears || 0);
+    return (b.avgClears || 0) - (a.avgClears || 0);
+  });
+  return e.map((t, i) => Object.assign({}, t, { rank: i + 1 }));
+}
+function getRecommendTeams() {
+  const d = _load();
+  if (d._teamsFromCloud) return _deepClone(d._cloudRecommendTeams || []);
+  return (d.allTeams || []).slice().filter((t) => !_isMockTeamId(t.id) && (t.joinType || 'open') === 'open');
+}
 function updateTeamName(name) { const d=_load(); if(!d.team)return{ok:false,reason:'未加入战队'}; const me=d.team.members.find(m=>m.openid===d.user.openid); if(!me||!me.isLeader)return{ok:false,reason:'仅队长可修改队名'}; if((d.dailyCounters.renameTeamCount||0)>=1)return{ok:false,reason:'今日修改次数已达上限'}; d.team.name=name; d.dailyCounters.renameTeamCount=(d.dailyCounters.renameTeamCount||0)+1; _save(); return{ok:true}; }
 function updateTeamDescription(desc) { const d=_load(); if(!d.team)return; const me=d.team.members.find(m=>m.openid===d.user.openid); if(!me||!me.isLeader)return; d.team.description=desc; _save(); }
 function transferLeader(newL) { const d=_load(); if(!d.team)return{ok:false,reason:'未加入战队'}; const me=d.team.members.find(m=>m.openid===d.user.openid); if(!me||!me.isLeader)return{ok:false,reason:'仅队长可转让'}; const nl=d.team.members.find(m=>m.openid===newL); if(!nl)return{ok:false,reason:'成员不存在'}; me.isLeader=false; nl.isLeader=true; d.team.leaderId=newL; _save(); return{ok:true}; }
@@ -420,7 +462,9 @@ function requestAccountDeletion() { try{wx.removeStorageSync(STORAGE_KEY);_cache
 
 module.exports = {
   checkDailyReset,
-  getOwnedBalloons, getOwnedBalloonList, addBalloon, removeBalloon, hasBalloon, getBalloonQuantity,
+  getOwnedBalloons, getOwnedBalloonList, addBalloon, removeBalloon, hasBalloon, getBalloonQuantity, getSynEligibleQuantity,
+  mergeInventoryFromCloud,
+  mergePurchasedInventoryFromCloud,
   getEquippedLegend, equipLegend, unequipLegend,
   getLegendUsedLevels, canEquipLegend, markLegendUsedInLevel, validateEquippedLegends,
   getUnlockedLevels, unlockLevel, isLevelUnlocked, getLastPlayedLevel, setLastPlayedLevel,
@@ -433,7 +477,7 @@ module.exports = {
   addBouquet, getBouquets, toggleBouquetStar,
   addTransaction, getTransactions,
   createGift, claimGift, expireGifts, getPendingGifts,
-  createTeam, joinTeam, leaveTeam, getTeam, getAllTeams, getRankedTeams, updateTeamName, updateTeamDescription, transferLeader,
+  createTeam, joinTeam, leaveTeam, getTeam, getAllTeams, getRankedTeams, getRecommendTeams, applyCloudTeamSync, updateTeamName, updateTeamDescription, transferLeader,
   getSettings, updateSettings,
   getUser, updateUser,
   incrementCounter, getCounter, canDoAction,

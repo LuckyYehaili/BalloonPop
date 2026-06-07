@@ -1,0 +1,9 @@
+{
+  "name": "checkExpiredGifts",
+  "version": "1.0.0",
+  "description": "expire pending gifts and return inventory to sender",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

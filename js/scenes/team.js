@@ -4,6 +4,8 @@ const {
   gradientPink, measureText, loadImages, getImage, drawModalBackground
 } = require('../engine/canvas-ui');
 const store = require('../store');
+const cloudTeam = require('../cloud-team');
+const { isInviteJoinCached, markInviteJoinSuccess } = require('../invite-cache');
 const UX = require('../ui-theme');
 const { getCapsuleLayout } = require('../layout-safe');
 const { drawPageHeader } = require('../engine/page-header');
@@ -63,6 +65,8 @@ let state = {
   scrollTouchStart: 0,
   isDraggingScroll: false,
   teams: [],
+  rankTeams: [],
+  recommendTeams: [],
   hasTeam: false,
   team: null,
   members: [],
@@ -177,7 +181,7 @@ function _fmtComma(n) {
 }
 
 function _teamDisplayScore(t) {
-  const clears = t.dailyTotalClears || 0;
+  const clears = t.periodClears || 0;
   const h = _hash(t.id);
   return clears * 180 + 42000 + (h % 8000);
 }
@@ -270,7 +274,7 @@ const RANK_HINT_H = 38;
 function _drawRankCard(ctx, scene, W, x, y, w, team, idx, myTeamId, cardH, registerHit) {
   const isMy = myTeamId && team.id === myTeamId;
   const meta = _teamMeta(team);
-  const totalClears = team.dailyTotalClears || 0;            // 周期累计：本周总通关
+  const totalClears = team.periodClears || 0;            // 周期累计：本周总通关
   const memberCount = Math.max(0, team.memberCount || 0);
   const avgClears = memberCount > 0 ? Math.round(totalClears / memberCount) : 0;  // 人均通关次数
   const rankColors = [GOLD, SILVER, BRONZE];
@@ -379,7 +383,7 @@ function _drawRankCard(ctx, scene, W, x, y, w, team, idx, myTeamId, cardH, regis
   if (getImage(peoplePath)) {
     drawImage(ctx, peoplePath, tx0, statCy - statIcon / 2, statIcon, statIcon);
   }
-  drawText(ctx, memberCount + '/60人', tx0 + statIcon + statIconGap, statCy, 'rgba(255,255,255,0.42)', lineFs, 'left', undefined, 400);
+  drawText(ctx, memberCount + '/20人', tx0 + statIcon + statIconGap, statCy, 'rgba(255,255,255,0.42)', lineFs, 'left', undefined, 400);
 
   const avgStr = '人均通关 ' + _fmtComma(avgClears) + ' 次';
   const avgW = measureText(ctx, avgStr, lineFs, 400);
@@ -425,13 +429,12 @@ module.exports = {
       loadImages(Object.values(TEAM_UI_IMG), () => {});
     }
     const d = data || {};
-    const team = store.getTeam();
     // 兼容旧调用：'discover' 视为新的 'recommend'
     if (d.tab === 'rank' || d.tab === 'my' || d.tab === 'recommend') state.tab = d.tab;
     else if (d.tab === 'discover') state.tab = 'recommend';
     else if (d.action === 'create') state.tab = 'recommend';   // 旧入口：进推荐页，不自动弹创建弹窗
-    else state.tab = team ? 'my' : 'recommend';
-    if (!team) _initCreateForm();
+    else state.tab = store.getTeam() ? 'my' : 'recommend';
+    if (!store.getTeam()) _initCreateForm();
     // 进入页面默认关闭所有弹窗
     state.showCreateModal = false;
     state.showSuccessModal = false;
@@ -440,9 +443,16 @@ module.exports = {
     state.showRulesModal = false;
     state.pendingJoinTeam = null;
     state.scrollY = 0;
-    this._loadTeams();
+    cloudTeam.syncTeamFromCloud().finally(() => {
+      this._loadTeams();
+      if (d.autoJoinTeamId) {
+        this._handleAutoJoinFromShare(String(d.autoJoinTeamId), d.inviteToken ? String(d.inviteToken) : '');
+      }
+    });
     if (state.refreshTimer) clearInterval(state.refreshTimer);
-    state.refreshTimer = setInterval(() => this._loadTeams(true), 30000);
+    state.refreshTimer = setInterval(() => {
+      cloudTeam.syncTeamFromCloud().finally(() => this._loadTeams(true));
+    }, 30000);
   },
   onHide() {
     if (state.refreshTimer) {
@@ -451,14 +461,51 @@ module.exports = {
     }
     state.isDraggingScroll = false;
   },
+  _handleAutoJoinFromShare(teamId, inviteToken) {
+    const existing = store.getTeam();
+    if (existing) {
+      const myId = existing.teamId || existing.id;
+      if (String(myId) === String(teamId)) {
+        showToast('你已在该战队中');
+        state.tab = 'my';
+      } else {
+        showToast('你已加入其他战队');
+      }
+      return;
+    }
+    if (inviteToken && isInviteJoinCached(teamId, inviteToken)) {
+      showToast('你已在该战队中');
+      state.tab = 'my';
+      cloudTeam.syncTeamFromCloud().finally(() => this._loadTeams());
+      return;
+    }
+    showToast('加入中…');
+    const p = inviteToken
+      ? cloudTeam.handleTeamInvite(inviteToken, 'accept')
+      : cloudTeam.joinTeam(teamId);
+    p.then((r) => {
+      if (r.success) {
+        if (inviteToken) markInviteJoinSuccess(teamId, inviteToken);
+        showToast('加入成功');
+        state.tab = 'my';
+        this._loadTeams();
+      } else {
+        const msg = r.msg || '加入失败';
+        showToast(msg.indexOf('已加入') >= 0 ? '你已加入其他战队' : msg);
+      }
+    });
+  },
+
   _loadTeams(silent) {
-    state.teams = store.getRankedTeams() || [];
+    state.rankTeams = store.getRankedTeams() || [];
+    state.recommendTeams = store.getRecommendTeams() || [];
+    state.teams = state.tab === 'rank' ? state.rankTeams : state.recommendTeams;
     const team = store.getTeam();
-    const ranked = state.teams;
+    const ranked = state.rankTeams;
     state.hasTeam = !!team;
     state.team = team;
     if (team && team.members) {
-      state.members = [...team.members].sort((a, b) => (b.dailyClears || 0) - (a.dailyClears || 0));
+      state.members = [...team.members].sort((a, b) => (b.periodClears || 0) - (a.periodClears || 0));
       _preloadMemberAvatars(state.members);
     } else {
       state.members = [];
@@ -472,17 +519,30 @@ module.exports = {
 
   _tapTeamRow(t) {
     const my = store.getTeam();
-    if (my && my.id === t.id) {
+    const tid = t.teamId || t.id;
+    if (!tid || String(tid).indexOf('mock_team_') === 0) {
+      showToast('战队数据未同步，请稍后重试');
+      cloudTeam.syncTeamFromCloud().finally(() => this._loadTeams());
+      return;
+    }
+    if (my && (my.id === tid || my.teamId === tid)) {
       state.tab = 'my';
       state.scrollY = 0;
       return;
     }
-    const r = store.joinTeam(t.id);
-    if (r.ok) {
-      showToast('加入成功');
-      this._loadTeams();
-      state.tab = 'my';
-    } else showToast(r.reason || '加入失败');
+    if (t.joinType === 'invite') {
+      showToast('该战队仅支持邀请加入');
+      return;
+    }
+    cloudTeam.joinTeam(tid).then((r) => {
+      if (r.success) {
+        showToast('加入成功');
+        this._loadTeams();
+        state.tab = 'my';
+      } else {
+        showToast(r.msg || '加入失败');
+      }
+    });
   },
 
   render(ctx, W, H, timeMs) {
@@ -590,7 +650,9 @@ module.exports = {
       const scrollAreaH = Math.max(0, scrollViewBottom - scrollViewTop);
 
       // 排名 Tab 仅展示前 10 名战队（推荐 Tab 全量展示）
-      const visibleTeams = state.tab === 'rank' ? state.teams.slice(0, 10) : state.teams;
+      const visibleTeams = state.tab === 'rank'
+        ? state.rankTeams.slice(0, 10)
+        : state.recommendTeams;
       // 排名 Tab 在 10 个战队下方追加一段提示（提示参与滚动）
       const showRankHint = state.tab === 'rank';
       const rankHintGap = 16;                                       // 末条战队与提示间距
@@ -609,7 +671,10 @@ module.exports = {
       ctx.translate(0, -state.scrollY);
       let ly = scrollViewTop;
       const contentTopWorld = ly;
-      if (state.tab === 'recommend') {
+      if (visibleTeams.length === 0) {
+        const emptyMsg = state.tab === 'rank' ? '本周暂无上榜战队' : '暂无可加入的公开战队';
+        drawText(ctx, emptyMsg, W / 2, scrollViewTop + Math.min(48, scrollAreaH / 2), 'rgba(255,255,255,0.38)', 13, 'center', undefined, 400);
+      } else if (state.tab === 'recommend') {
         visibleTeams.forEach((team, idx) => {
           this._drawRecommendCard(ctx, W, 14, ly, W - 28, team, idx);
           ly += cardH + cardGap;
@@ -692,7 +757,7 @@ module.exports = {
       const listTop = y;
 
       // 仅展示前 10 名战队，提示放在 10 个战队下方（参与滚动）
-      const rankTeams = state.teams.slice(0, 10);
+      const rankTeams = state.rankTeams.slice(0, 10);
       const rankHintGap = 16;                                       // 末条战队与提示间距
       const totalH = rankTeams.length * (cardH + gap) + 24
                    + (rankHintGap + RANK_HINT_H);
@@ -809,11 +874,11 @@ module.exports = {
       const statRowY = cardY + PAD + headerH + gapHeaderStat;
       const statGap = 8;
       const subCardW = (cardW - PAD * 2 - statGap * 2) / 3;
-      const clears = t.dailyTotalClears || 0;
+      const clears = t.periodClears || 0;
       const totalShow = _fmtComma(clears * 88 + 9200);
       const rankShow = 'NO.' + state.myRank;
       const me = (t.members || []).find(m => m.openid === store.getUser().openid) || (t.members || [])[0];
-      const myContrib = _fmtComma((me && me.dailyClears ? me.dailyClears : 0) * 120 + 400);
+      const myContrib = _fmtComma((me && me.periodClears ? me.periodClears : 0) * 120 + 400);
       const stats = [
         { val: totalShow, lab: '总通关',   col: NEON },
         { val: rankShow,  lab: '本周排名', col: GOLD },
@@ -844,7 +909,7 @@ module.exports = {
 
       // ── 开始挑战 主按钮（紫粉渐变） ──
       const startY = statRowY + statH + gapStatBtn;
-      drawButtonGradient(ctx, btnX, startY, btnW, startBtnH, '▶  开始挑战', violetPinkGrad, '#fff', 16, 14, 'rgba(255,80,200,0.4)', 700);
+      drawButtonGradient(ctx, btnX, startY, btnW, startBtnH, '开始挑战', violetPinkGrad, '#fff', 14, 14, 'rgba(255,80,200,0.4)', 700);
       scene.manager.addTouchable(btnX, startY - state.scrollY, btnW, startBtnH, 'startChallenge');
 
       // ── 邀请队员（次级描边按钮） ──
@@ -937,7 +1002,7 @@ module.exports = {
         }
 
         // 右侧改为「本周通关次数 xxx」：标签灰、数值霓虹粉强调
-        const weekClears = (m.dailyClears || 0);
+        const weekClears = (m.periodClears || 0);
         const rightEdge = W - 28;
         const valueStr = _fmtComma(weekClears);
         const labelStr = '本周通关次数 ';
@@ -1334,8 +1399,8 @@ module.exports = {
     // 规则内容：标题 ↑ 解释 ↓ 上下两行展示，分组之间留 16px
     const rules = [
       { label: '奖品', text: '战队榜前 5 名战队，全员获得限定传奇气球外观' },
-      { label: '统计', text: '每周日 ~ 下周六 为一个周期，按周期累计战队总通关' },
-      { label: '发奖', text: '周日上午 9:00 发放上一周期奖品，请留意通知' },
+      { label: '统计', text: '每周日 ~ 下周六 为一个周榜周期，按周期累计战队总通关' },
+      { label: '发奖', text: '周日上午 9:00 检查周榜前 5 并发放上一周期奖品，请留意通知' },
       { label: '提示', text: '退出战队后当天无法再加入或创建战队' }
     ];
     // 视觉度量
@@ -1603,8 +1668,16 @@ module.exports = {
   _registerRecommendTabsTouches(scene, W, y, h) {
     const gap = 10;
     const tabW = (W - 32 - gap) / 2;
-    scene.manager.addTouchable(16, y, tabW, h, () => { state.tab = 'recommend'; state.scrollY = 0; });
-    scene.manager.addTouchable(16 + tabW + gap, y, tabW, h, () => { state.tab = 'rank'; state.scrollY = 0; });
+    scene.manager.addTouchable(16, y, tabW, h, () => {
+      state.tab = 'recommend';
+      state.scrollY = 0;
+      state.teams = state.recommendTeams;
+    });
+    scene.manager.addTouchable(16 + tabW + gap, y, tabW, h, () => {
+      state.tab = 'rank';
+      state.scrollY = 0;
+      state.teams = state.rankTeams;
+    });
   },
 
   _drawRecommendCard(ctx, W, x, y, w, team, idx) {
@@ -1701,8 +1774,8 @@ module.exports = {
 
     // 底栏：人数 + 本周总通关 + 累计总通关
     const footY = y + cardH - 18;
-    drawText(ctx, '👤 ' + (team.memberCount || 0) + '/60人', x + 14, footY, 'rgba(255,255,255,0.45)', 12, 'left', undefined, 400);
-    const weekClearShow = '🔥 本周总通关 ' + _fmtComma(team.dailyTotalClears || 0);
+    drawText(ctx, '👤 ' + (team.memberCount || 0) + '/20人', x + 14, footY, 'rgba(255,255,255,0.45)', 12, 'left', undefined, 400);
+    const weekClearShow = '🔥 本周总通关 ' + _fmtComma(team.periodClears || 0);
     drawText(ctx, weekClearShow, x + 14 + 100, footY, 'rgba(255,255,255,0.45)', 12, 'left', undefined, 400);
     const totalShow = '累计总通关 ' + _fmtComma(_teamDisplayScore(team));
     drawText(ctx, totalShow, x + w - 14, footY, 'rgba(255,255,255,0.65)', 12, 'right', undefined, 600);
@@ -1795,15 +1868,22 @@ module.exports = {
     state.showJoinModal = false;
     state.pendingJoinTeam = null;
     if (!team) return;
-    const r = store.joinTeam(team.id);
-    if (r.ok) {
-      state.joinedId = team.id;
-      showToast('加入成功');
-      this._loadTeams();
-      state.tab = 'my';
-    } else {
-      showToast(r.reason || '加入失败');
+    const tid = team.teamId || team.id;
+    if (!tid || String(tid).indexOf('mock_team_') === 0) {
+      showToast('战队数据未同步，请稍后重试');
+      cloudTeam.syncTeamFromCloud().finally(() => this._loadTeams());
+      return;
     }
+    cloudTeam.joinTeam(tid).then((r) => {
+      if (r.success) {
+        state.joinedId = tid;
+        showToast('加入成功');
+        this._loadTeams();
+        state.tab = 'my';
+      } else {
+        showToast(r.msg || '加入失败');
+      }
+    });
   },
 
   confirmCreate() {
@@ -1813,18 +1893,22 @@ module.exports = {
     const name = (state.teamName || '').trim();
     if (!name) { state.nameError = '战队名称不能为空'; return; }
     if (name.length < 2 || name.length > 16) { state.nameError = '名称长度需为 2-16 个字符'; return; }
-    const allTeams = store.getAllTeams();
-    if (allTeams.some(t => t.name === name)) { state.nameError = '队伍名称已存在'; return; }
-    const result = store.createTeam(name);
-    if (result.ok) {
-      if (state.teamDesc) {
-        try { store.updateTeamDescription(state.teamDesc); } catch (e) { /* ignore */ }
+    const iconKey = 'icon_balloon_' + String((state.teamIconIdx % 5) + 1).padStart(2, '0');
+    cloudTeam.createTeam({
+      name,
+      description: (state.teamDesc || '').trim(),
+      joinType: state.joinType,
+      iconKey
+    }).then((r) => {
+      if (r.success) {
+        state.createdTeamName = name;
+        state.showCreateModal = false;
+        state.showSuccessModal = true;
+        this._loadTeams();
+      } else {
+        showToast(r.msg || '创建失败');
       }
-      state.createdTeamName = name;
-      state.showCreateModal = false;
-      state.showSuccessModal = true;
-      this._loadTeams();
-    } else showToast(result.reason || '创建失败');
+    });
   },
 
   // 打开创建战队弹窗
@@ -1861,16 +1945,29 @@ module.exports = {
     showToast('海报生成中…');
   },
   onShareTeam() {
-    if (typeof wx !== 'undefined' && wx.shareAppMessage) {
-      try {
-        wx.shareAppMessage({
-          title: '一起来「不准爆！」战队：' + (state.team && state.team.name ? state.team.name : '气球挑战'),
-          imageUrl: ''
-        });
-      } catch (e) {
+    const team = state.team || store.getTeam();
+    if (!team) { showToast('暂无战队'); return; }
+    const teamId = team.teamId || team.id;
+    const title = '一起来「不准爆！」战队：' + (team.name || '气球挑战');
+    cloudTeam.inviteToTeam(teamId).then((r) => {
+      if (!r.success) {
+        showToast(r.msg || '生成邀请失败');
+        return;
+      }
+      const token = r.data && r.data.inviteToken;
+      const query = token
+        ? ('teamId=' + encodeURIComponent(teamId) + '&inviteToken=' + encodeURIComponent(token))
+        : ('teamId=' + encodeURIComponent(teamId));
+      if (typeof wx !== 'undefined' && wx.shareAppMessage) {
+        try {
+          wx.shareAppMessage({ title, imageUrl: '', query });
+        } catch (e) {
+          showToast('请使用右上角菜单分享');
+        }
+      } else {
         showToast('请使用右上角菜单分享');
       }
-    } else showToast('请使用右上角菜单分享');
+    });
   },
   onLeaveTap() {
     // 打开自定义确认弹窗（与全局色系一致）
@@ -1881,15 +1978,16 @@ module.exports = {
   },
   confirmLeave() {
     state.showLeaveModal = false;
-    const r = store.leaveTeam();
-    if (r.ok) {
-      showToast('已退出战队');
-      this._loadTeams();
-      state.tab = 'recommend';
-      _initCreateForm();
-    } else {
-      showToast(r.reason || '退出失败');
-    }
+    cloudTeam.leaveTeam().then((r) => {
+      if (r.success) {
+        showToast('已退出战队');
+        this._loadTeams();
+        state.tab = 'recommend';
+        _initCreateForm();
+      } else {
+        showToast(r.msg || '退出失败');
+      }
+    });
   },
 
   goBack() {

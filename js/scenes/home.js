@@ -5,6 +5,7 @@ const {
   beginScrollView, endScrollView, loadImages, getImage, drawModalBackground
 } = require('../engine/canvas-ui');
 const store = require('../store');
+const cloudTeam = require('../cloud-team');
 const { BALLOON_TYPES } = require('../balloons');
 const UX = require('../ui-theme');
 const { getCapsuleLayout } = require('../layout-safe');
@@ -26,9 +27,14 @@ let state = {
   userAvatar: '', userNickName: '玩家', legendTotal: 0, legendTotalAll: 0, // 个人资料 + 图鉴进度
   lastLevel: 1, highestLevel: 1, isFirstTime: true,                        // 上次/最高关卡 + 是否首次进入
   isLoggedIn: false,                                                        // 微信授权登录态
-  hasTeam: false, teamName: '', teamMemberCount: 0, teamDailyClears: 0,    // 战队信息
+  hasTeam: false, teamName: '', teamMemberCount: 0, teamPeriodClears: 0,    // 战队信息
   topTeams: [], recentBalloons: [],                                        // 排行榜前几 + 最近获得气球
   showLoginModal: false,                                                    // 微信授权登录弹窗
+  showBouquetShareModal: false,                                             // 好友点开花束分享落地弹窗
+  bouquetShare: null,                                                       // { shareTitle, posterTitle, subtitle, balloons }
+  bouquetSharePosterPath: '',                                               // 与分享卡片一致的海报临时图
+  bouquetSharePosterLoading: false,
+  loginOverlayFromBouquet: false,
   showNotification: false, scrollY: 0, contentHeight: 0                    // 通知弹窗 + 滚动相关
 };
 
@@ -83,12 +89,13 @@ function _fmtComma(n) {
   return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-function _sumTeamMemberClears(team) {
+function _sumTeamPeriodClears(team) {
   if (!team) return 0;
+  if (team.periodClears != null) return Number(team.periodClears) || 0;
   if (Array.isArray(team.members) && team.members.length) {
-    return team.members.reduce((sum, m) => sum + (Number(m && m.dailyClears) || 0), 0);
+    return team.members.reduce((sum, m) => sum + (Number(m && m.periodClears) || 0), 0);
   }
-  return Number(team.dailyTotalClears) || 0;
+  return 0;
 }
 
 /**
@@ -243,7 +250,7 @@ function _carouselTeamList() {
     return state.topTeams.map(t => ({
       rank: t.rank,
       name: t.name,
-      clears: Math.max(100, Math.round((t.dailyTotalClears || 0) * 160 + 4200)) // 把通关数 × 系数 + 基线，做出"看起来更大"的展示数字
+      clears: Math.max(100, Math.round((t.periodClears || 0) * 160 + 4200)) // 把通关数 × 系数 + 基线，做出"看起来更大"的展示数字
     }));
   }
   return [
@@ -263,7 +270,38 @@ module.exports = {
       _uiImgLoaded = true;
       loadImages(Object.values(UI_IMG), () => {});
     }
-    this._refresh();
+    const d = data || {};
+    if (d.bouquetShare) {
+      state.showBouquetShareModal = true;
+      state.bouquetShare = d.bouquetShare;
+      state.bouquetSharePosterPath = '';
+      state.bouquetSharePosterLoading = true;
+      state.showLoginModal = false;
+      this._authPromptDone = true;
+      const { createBouquetPosterFile } = require('../bouquet-share');
+      const payload = d.bouquetShare;
+      createBouquetPosterFile({
+        balloons: payload.balloons,
+        posterTitle: payload.posterTitle,
+        subtitle: payload.subtitle
+      }).then((path) => {
+        if (!state.showBouquetShareModal || state.bouquetShare !== payload) return;
+        state.bouquetSharePosterPath = path;
+        state.bouquetSharePosterLoading = false;
+        if (path) loadImages([path], () => {});
+      }).catch(() => {
+        if (state.showBouquetShareModal && state.bouquetShare === payload) {
+          state.bouquetSharePosterLoading = false;
+        }
+      });
+    } else {
+      state.showBouquetShareModal = false;
+      state.bouquetShare = null;
+      state.bouquetSharePosterPath = '';
+      state.bouquetSharePosterLoading = false;
+      state.loginOverlayFromBouquet = false;
+    }
+    cloudTeam.syncTeamFromCloud().finally(() => this._refresh());
   },
   // 把 store 里散乱的数据整理成 render 一次性可用的 state（避免每帧 IO/计算）
   _refresh() {
@@ -300,14 +338,14 @@ module.exports = {
       state.hasTeam = !!team;
       state.teamName = team?team.name:'';
       state.teamMemberCount = team?(team.members?team.members.length:team.memberCount||0):0;
-      state.teamDailyClears = _sumTeamMemberClears(team);
+      state.teamPeriodClears = _sumTeamPeriodClears(team);
       state.topTeams = ranked.slice(0,5);
       state.recentBalloons = ownedList;
 
       // 未登录 且 本次进程内还没提示过：拉起微信授权登录弹窗
       // _authPromptDone 在用户登录 / 主动暂不登录后置 true，避免热恢复反复弹；
       // 退出登录会在 profile 里把它复位为 false，下次进入 home 重新提示。
-      if (!state.isLoggedIn && !this._authPromptDone) {
+      if (!state.isLoggedIn && !this._authPromptDone && !state.showBouquetShareModal) {
         state.showLoginModal = true;
       }
 
@@ -388,7 +426,7 @@ module.exports = {
 
     // —— 双列全局统计 ——
     const rankedAll = store.getRankedTeams() || [];                                    // 全部战队排行数据
-    const sumClears = rankedAll.reduce((a, x) => a + (x.dailyTotalClears || 0), 0);    // 累加所有战队今日通关数
+    const sumClears = rankedAll.reduce((a, x) => a + (x.periodClears || 0), 0);    // 累加所有战队本周通关数
     const onlineV = _fmtComma(8800 + sumClears * 4 + state.highestLevel * 90);         // 在线玩家展示值（千分位）
     const activeV = _fmtComma(Math.max(1, rankedAll.length) * 37 + 1980);              // 活跃战队展示值（千分位）
     const hw = (W - padding * 2 - 10) / 2;                                             // 单卡宽度：屏宽减去左右 padding 与中间 10px 间隙后平分
@@ -494,8 +532,8 @@ module.exports = {
       const idx = allR.findIndex(x => x.id === myTeam.id);
       if (idx >= 0) rankDisp = 'NO.' + (idx + 1);
     }
-    const totalClearsShow = _fmtComma(state.teamDailyClears);             // 全队成员通关次数总和
-    const myContribShow = _fmtComma(state.teamDailyClears * 22 + 400);    // 我的贡献展示值
+    const totalClearsShow = _fmtComma(state.teamPeriodClears);             // 战队本周总通关
+    const myContribShow = _fmtComma(state.teamPeriodClears * 22 + 400);    // 我的贡献展示值
 
     if (state.hasTeam) {
       // —— 已加入战队：展示战队名、徽章、人数、3 项数据、查看详情、开始挑战 ——
@@ -611,7 +649,7 @@ module.exports = {
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.restore();
-      drawText(ctx, '▶  开始挑战', cx, startY + startH / 2, '#ffffff', 18, 'center', 'rgba(0,0,0,0.25)', 700);
+      drawText(ctx, '开始挑战', cx, startY + startH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
       scene.manager.addTouchable(cardX + 16, sy(startY, startH), cardW - 32, sh(startH), 'startChallenge');
 
       y += mainH + 12;
@@ -644,7 +682,7 @@ module.exports = {
       drawText(ctx, '加入战队，与队友一起冲榜赢奖励', cx, copyY0 + 24, 'rgba(255,255,255,0.45)', 12, 'center', undefined, 400); // 副标题
 
       // 创建/加入战队按钮
-      const jBtn = drawButtonGradient(ctx, cardX + 16, joinY, cardW - 32, joinBtnH, '＋ 创建/加入战队', gradientPink, '#fff', 14, 14, undefined, 500);
+      const jBtn = drawButtonGradient(ctx, cardX + 16, joinY, cardW - 32, joinBtnH, '加入战队', gradientPink, '#fff', 14, 14, undefined, 500);
       scene.manager.addTouchable(jBtn.x, sy(jBtn.y, jBtn.h), jBtn.w, sh(jBtn.h), 'goToCreateTeam');
 
       // 开始挑战（未入队状态，同色系：紫→粉）
@@ -659,7 +697,7 @@ module.exports = {
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.restore();
-      drawText(ctx, '▶  开始挑战', cx, startY + startBtnH / 2, '#ffffff', 16, 'center', 'rgba(0,0,0,0.25)', 700);
+      drawText(ctx, '开始挑战', cx, startY + startBtnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
       scene.manager.addTouchable(cardX + 16, sy(startY, startBtnH), cardW - 32, sh(startBtnH), 'startChallenge');
 
       y += mainH + 12;
@@ -701,13 +739,22 @@ module.exports = {
 
     state.contentHeight = topY + y * scaleY + safeB + 10; // 记录内容总高，便于将来做滚动
 
-    // 7. 微信授权登录弹窗（最高优先级，遮挡下方所有交互）
+    // 7. 好友花束分享落地弹窗（进入游戏后叠授权，不关花束层）
+    if (state.showBouquetShareModal && state.bouquetShare) {
+      this._drawBouquetShareModal(ctx, W, H);
+      if (state.showLoginModal && state.loginOverlayFromBouquet) {
+        this._drawLoginModal(ctx, W, H);
+      }
+      return;
+    }
+
+    // 8. 微信授权登录弹窗（非花束叠层场景）
     if (state.showLoginModal) {
       this._drawLoginModal(ctx, W, H);
       return;
     }
 
-    // 8. 通知弹窗（尺寸与字号随屏宽收敛，避免占满屏、字过大）
+    // 9. 通知弹窗（尺寸与字号随屏宽收敛，避免占满屏、字过大）
     if (state.showNotification) {
       drawModalBackground(ctx, W, H);
       const pad = 18;                       // 内边距
@@ -772,16 +819,32 @@ module.exports = {
       this.manager.switchTo('team', { action: 'create' });
       return;
     }
-    if (typeof wx !== 'undefined' && wx.shareAppMessage) {
-      try {
-        wx.shareAppMessage({
-          title: '一起来「不准爆！」战队：' + (state.teamName || '气球挑战'),
-          imageUrl: ''
-        });
-      } catch (e) {
+    const team = store.getTeam();
+    if (!team) {
+      this.manager.switchTo('team', { action: 'create' });
+      return;
+    }
+    const teamId = team.teamId || team.id;
+    const title = '一起来「不准爆！」战队：' + (state.teamName || team.name || '气球挑战');
+    cloudTeam.inviteToTeam(teamId).then((r) => {
+      if (!r.success) {
+        showToast(r.msg || '生成邀请失败');
+        return;
+      }
+      const token = r.data && r.data.inviteToken;
+      const query = token
+        ? ('teamId=' + encodeURIComponent(teamId) + '&inviteToken=' + encodeURIComponent(token))
+        : ('teamId=' + encodeURIComponent(teamId));
+      if (typeof wx !== 'undefined' && wx.shareAppMessage) {
+        try {
+          wx.shareAppMessage({ title, imageUrl: '', query });
+        } catch (e) {
+          showToast('请使用右上角菜单分享');
+        }
+      } else {
         showToast('请使用右上角菜单分享');
       }
-    } else showToast('请使用右上角菜单分享');
+    });
   },
   goToCreateTeam() {                           // 创建/加入战队
     this.manager.switchTo('team', { action: 'create' });
@@ -803,6 +866,107 @@ module.exports = {
   onNotificationCancel() {                     // 通知弹窗：暂不开启
     state.showNotification = false;
     store.setNotificationAuthorized(false);
+  },
+
+  // ─── 好友花束分享落地弹窗 ─────────────────────────────────
+  _drawBouquetShareModal(ctx, W, H) {
+    const scene = this;
+    const payload = state.bouquetShare;
+    if (!payload) return;
+
+    drawModalBackground(ctx, W, H);
+    scene.manager.addTouchable(0, 0, W, H, '_bouquetShareModalAbsorb');
+
+    const side = 28;
+    const mw = Math.min(W - side * 2, 360);
+    const imgH = Math.round(mw * 0.72);
+    const copyH = 44;
+    const disclaimerH = 28;
+    const btnH = 46;
+    const btnGap = 10;
+    const pad = 20;
+    const posterReady = !state.bouquetSharePosterLoading && !!state.bouquetSharePosterPath;
+    const mh = pad + copyH + 12 + imgH + 8 + disclaimerH + pad + btnH + btnGap + btnH + pad;
+    const mx = (W - mw) / 2;
+    const my = Math.max(48, (H - mh) / 2);
+
+    ctx.save();
+    roundRect(ctx, mx, my, mw, mh, 20);
+    const bg = ctx.createLinearGradient(mx, my, mx, my + mh);
+    bg.addColorStop(0, 'rgba(10,46,36,0.98)');
+    bg.addColorStop(1, 'rgba(4,18,14,0.98)');
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(134,239,172,0.45)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    const copyY = my + pad;
+    drawWrappedText(
+      ctx,
+      payload.shareTitle || '好友分享了一束气球',
+      mx + pad, copyY, mw - pad * 2, 20,
+      'rgba(167,243,208,0.92)', 15, 600
+    );
+
+    const imgX = mx + pad;
+    const imgY = copyY + copyH + 12;
+    const imgW = mw - pad * 2;
+    ctx.save();
+    roundRect(ctx, imgX, imgY, imgW, imgH, 12);
+    ctx.clip();
+    const poster = state.bouquetSharePosterPath && getImage(state.bouquetSharePosterPath);
+    if (poster) {
+      drawImage(ctx, state.bouquetSharePosterPath, imgX, imgY, imgW, imgH);
+    } else if (state.bouquetSharePosterLoading) {
+      ctx.fillStyle = 'rgba(6,26,20,0.9)';
+      ctx.fillRect(imgX, imgY, imgW, imgH);
+      drawText(ctx, '加载分享图…', imgX + imgW / 2, imgY + imgH / 2, 'rgba(134,239,172,0.7)', 14, 'center', undefined, 500);
+    } else {
+      ctx.fillStyle = 'rgba(6,26,20,0.9)';
+      ctx.fillRect(imgX, imgY, imgW, imgH);
+      drawText(ctx, '预览加载失败', imgX + imgW / 2, imgY + imgH / 2, 'rgba(248,113,113,0.85)', 14, 'center', undefined, 500);
+    }
+    ctx.restore();
+
+    const discY = imgY + imgH + 8;
+    drawWrappedText(
+      ctx,
+      '本分享仅作展示，不包含任何道具发放。',
+      mx + pad, discY, mw - pad * 2, 14,
+      'rgba(134,239,172,0.55)', 11, 400
+    );
+
+    const btnW = mw - pad * 2;
+    const btnX = mx + pad;
+    const enterY = discY + disclaimerH + pad;
+    const enterGrad = (c, gx, gy, gw, gh) => {
+      const g = c.createLinearGradient(gx, gy, gx, gy + gh);
+      g.addColorStop(0, '#34d399');
+      g.addColorStop(1, '#10b981');
+      return g;
+    };
+    const enterLabel = state.bouquetSharePosterLoading ? '加载中…' : '进入游戏';
+    const b1 = drawButtonGradient(
+      ctx, btnX, enterY, btnW, btnH, enterLabel,
+      posterReady ? enterGrad : 'rgba(255,255,255,0.06)',
+      posterReady ? '#042f2e' : 'rgba(255,255,255,0.28)',
+      15, 12, posterReady ? 'rgba(52,211,153,0.35)' : undefined, 700
+    );
+    if (posterReady) scene.manager.addTouchable(b1.x, b1.y, b1.w, b1.h, 'bouquetShareEnterGame');
+
+    const exitY = enterY + btnH + btnGap;
+    const b2 = drawButtonGradient(ctx, btnX, exitY, btnW, btnH, '退出游戏', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.75)', 15, 12, undefined, 500);
+    scene.manager.addTouchable(b2.x, b2.y, b2.w, b2.h, 'bouquetShareExitGame');
+  },
+  _bouquetShareModalAbsorb() { /* 阻断首页其它点击 */ },
+  bouquetShareEnterGame() {
+    state.loginOverlayFromBouquet = true;
+    state.showLoginModal = true;
+  },
+  bouquetShareExitGame() {
+    this.exitMiniProgram();
   },
 
   // ─── 微信授权登录弹窗 ────────────────────────────────────
@@ -903,14 +1067,28 @@ module.exports = {
   _loginModalAbsorb() { /* 吸收弹窗外的所有点击，阻断穿透 */ },
   loginWithWeChat() {
     const scene = this;
+    const fromBouquet = !!state.loginOverlayFromBouquet;
     const { cloudLogin } = require('../cloud-login');
     showToast('登录中…');
     cloudLogin().then((r) => {
       if (r.ok) {
         scene._authPromptDone = true;
         state.showLoginModal = false;
+        state.loginOverlayFromBouquet = false;
+        if (fromBouquet) {
+          state.showBouquetShareModal = false;
+          state.bouquetShare = null;
+          state.bouquetSharePosterPath = '';
+          state.bouquetSharePosterLoading = false;
+        }
         scene._refresh();
         showToast('登录成功');
+        return;
+      }
+      if (fromBouquet) {
+        state.showLoginModal = false;
+        state.loginOverlayFromBouquet = false;
+        showToast('登录失败，请稍后再试');
         return;
       }
       const mockNicks = ['糖果小仙女', '霓虹少年', '气球猎人', '星河旅人', '夜光甜筒', '泡泡先生'];

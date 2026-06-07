@@ -106,7 +106,6 @@ async function sendBalloon(order) {
   const openid = order.openid
   const balloonId = order.balloonId
   const quantity = order.quantity || 1
-  const outTradeNo = order.outTradeNo
   const t = Date.now()
 
   if (!openid) throw new Error('订单缺少 openid')
@@ -117,11 +116,10 @@ async function sendBalloon(order) {
   if (invRes.data.length > 0) {
     await db.collection('balloon_inventory').doc(invRes.data[0]._id).update({
       data: {
-        quantity: _.inc(quantity),
-        updatedAt: t,
-        lastSource: 'purchase',
-        lastOutTradeNo: outTradeNo,
-        sourceOrderNo: outTradeNo
+        count: _.inc(quantity),
+        source: 'purchase',
+        giftable: true,
+        updatedAt: t
       }
     })
     return
@@ -131,10 +129,9 @@ async function sendBalloon(order) {
     data: {
       openid,
       balloonId,
-      quantity,
-      source: 'PURCHASE',
-      sourceOrderNo: outTradeNo,
-      obtainTime: t,
+      count: quantity,
+      source: 'purchase',
+      giftable: true,
       updatedAt: t
     }
   })

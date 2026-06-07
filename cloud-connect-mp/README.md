@@ -14,3 +14,14 @@
 
 仓库根目录 `BalloonPop` 的 `compileType` 为 **小游戏**（`game.js`），不会加载 `app.js` / `pages/`。  
 小游戏内可用启动参数 `cloudTest=1` 打开 Canvas 版测试页，或继续使用本小程序工程做 WXML 页面测试。
+
+## 云函数部署（推荐入口）
+
+小游戏工程内上传云函数若失败或卡住，**请在本目录部署**（共用同一份 `../cloudfunctions/`）：
+
+1. 微信开发者工具 → **导入项目** → 选择 `cloud-connect-mp`
+2. 云开发面板 → 环境选 `cloud1-d2geerzff38fc214b`
+3. 云函数列表找到 `createOrder`（及 `payNotify`、`login` 等）→ 右键 **上传并部署：云端安装依赖**
+4. 若云端安装超时：在终端执行 `cd ../cloudfunctions/createOrder && npm install`，再选 **上传并部署：所有文件**
+
+`createOrder` 已固定 `wx-server-sdk@~2.6.3` 并包含 `config.json`，避免 `latest` 在云端装依赖失败。

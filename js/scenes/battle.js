@@ -17,9 +17,11 @@ const { drawGauge } = require('../engine/gauge-renderer');
 const { getCapsuleLayout } = require('../layout-safe');
 const store = require('../store');
 const { purchaseLegendBalloon } = require('../cloud-pay');
+const { syncBalloonInventoryFromCloud } = require('../cloud-login');
 const { readIOS } = require('../platform');
 const { LEVELS, BALLOON_TYPES } = require('../balloons');
 const { getSequence } = require('../emoji-sequences');
+const { shareBouquetAsImage, normalizeBalloonList } = require('../bouquet-share');
 
 const AD_RESTART_GRANT = 2;
 const MAX_CUMULATIVE_RETRIES = 5;
@@ -92,6 +94,14 @@ let state = {
   time: 0, gaugeHidden: false, paidBalloonUsed: false,
   shareTextIndex: 0, bouquetReady: false,
   bouquetAnimStartMs: 0,
+  synInflateRun: false,
+  synInflateComplete: false,
+  synSelections: null,
+  synInflateQueue: [],
+  synAllBalloons: [],
+  synPumpStartIdx: 0,
+  synQueueIdx: 0,
+  synTotalCount: 0,
   // 圆形按钮 hit-test & 提示
   pumpDisabled: false,
   showPumpTip: false,
@@ -119,6 +129,14 @@ module.exports = {
     this._ensureOneShotBattleAudio('louqi');
     this._ensureOneShotBattleAudio('mofa');
     this._ensureOneShotBattleAudio('chenggong');
+
+    if (data && data.synInflateRun) {
+      if (state.pumpTipTimer) { clearTimeout(state.pumpTipTimer); state.pumpTipTimer = null; }
+      state.showPumpTip = false;
+      state.showTutorial = false;
+      this._initSynInflateRun(data);
+      return;
+    }
 
     this._initLevel();
 
@@ -198,7 +216,142 @@ module.exports = {
     this._stopPumpAudio();
   },
 
+  _clearSynInflateState() {
+    state.synInflateRun = false;
+    state.synInflateComplete = false;
+    state.synSelections = null;
+    state.synInflateQueue = [];
+    state.synAllBalloons = [];
+    state.synPumpStartIdx = 0;
+    state.synQueueIdx = 0;
+    state.synTotalCount = 0;
+  },
+
+  _initSynInflateRun(data) {
+    const lv2 = LEVELS[1];
+    this._clearSynInflateState();
+    state.synInflateRun = true;
+    state.synSelections = data.selections || {};
+    state.synInflateQueue = (data.queue || []).slice();
+    state.synAllBalloons = (data.allBalloons || []).slice();
+    state.synPumpStartIdx = 0;
+    state.synTotalCount = data.total || state.synAllBalloons.length;
+    state.synQueueIdx = 0;
+    state.currentLevelIdx = 1;
+    state.level = lv2;
+    state.bgKey = lv2.background || 'neon';
+    state.restartChances = store.getFreeRetries(2) || 3;
+    state.paidBalloonUsed = false;
+    state.pressure = 0;
+    state.isHolding = false;
+    state.gameState = 'idle';
+    state.isGameActive = true;
+    state.isExploding = false;
+    state.flashWhite = false;
+    state.completedBalloonsList = [];
+    state.completedInLevel = 0;
+    state.balloonInLevel = 0;
+    state.failCount = 0;
+    state.showLevelComplete = false;
+    state.showSettings = false;
+    state.showLegendSelect = false;
+    state.showTutorial = false;
+    state.showAbandonConfirm = false;
+    state.showResetChallengeConfirm = false;
+    state.showSharePreview = false;
+    state.showAdRestartModal = false;
+    state.showLegendSlotChoice = false;
+    state.legendSlot10ChoiceDone = true;
+    state.legendSlot10OpenedPurchase = false;
+    state.legendSlot10Mode = 'purchase';
+    state.legendSlot10AutoEquipId = null;
+    state.pumpDisabled = false;
+    state.failFresh = false;
+    state.failSamplePressure = null;
+    state.showPumpTip = false;
+    resetParticles();
+    this._syncDerived({});
+    if (!state.synInflateQueue.length) {
+      showToast('请先选择要合成的气球');
+      this._clearSynInflateState();
+      this.manager.switchTo('collection', { activeTab: 'bouquet' });
+      return;
+    }
+    this._showPumpTipFor(3000);
+  },
+
+  _finishSynInflateRun() {
+    const selections = state.synSelections || {};
+    const total = Object.keys(selections).reduce((s, id) => s + (selections[id] || 0), 0);
+    for (const id of Object.keys(selections)) {
+      if (!store.removeBalloon(id, selections[id])) {
+        showToast('扣除失败，请重试');
+        this._clearSynInflateState();
+        this.manager.switchTo('collection', { activeTab: 'bouquet' });
+        return;
+      }
+    }
+    const names = [];
+    Object.keys(selections).forEach(id => {
+      const m = BALLOON_TYPES.find(b => b.id === id);
+      if (m) names.push(m.name);
+    });
+    const balloonList = (state.completedBalloonsList || []).slice();
+    store.addBouquet({
+      level: 0,
+      hasLegend: true,
+      isSynthesized: true,
+      sourceBalloonIds: Object.keys(selections),
+      sourceBalloonName: names.join('·'),
+      balloons: balloonList
+    });
+    store.addTransaction({
+      type: 'synthesize',
+      balloonId: Object.keys(selections).join(','),
+      quantity: -total,
+      counterparty: '',
+      status: 'success'
+    });
+    state.synInflateComplete = true;
+    state.showLevelComplete = true;
+    state.gameState = 'idle';
+    state.isGameActive = false;
+    state.bouquetReady = false;
+    state.bouquetAnimStartMs = Date.now();
+    this._playOneShotBattleAudio('mofa', 48);
+  },
+
+  _handleSynNextBalloon() {
+    const item = state.synInflateQueue[state.synQueueIdx];
+    if (!item) {
+      this._finishSynInflateRun();
+      return;
+    }
+    state.completedBalloonsList = (state.completedBalloonsList || []).concat([{
+      balloonId: item.balloonId,
+      name: item.name,
+      emoji: item.emoji,
+      shape: item.shape,
+      color: item.color,
+      glowColor: item.glowColor,
+      isPaid: true
+    }]);
+    state.completedInLevel = state.completedBalloonsList.length;
+    state.synQueueIdx += 1;
+    state.pumpDisabled = false;
+    if (state.synQueueIdx >= state.synInflateQueue.length) {
+      this._finishSynInflateRun();
+      return;
+    }
+    state.balloonInLevel = state.synPumpStartIdx + state.synQueueIdx;
+    state.pressure = 0;
+    state.gameState = 'idle';
+    this._syncDerived({});
+    resetParticles();
+  },
+
   _initLevel() {
+    this._clearSynInflateState();
     const lastLevel = store.getLastPlayedLevel();
     const unlocked = store.getUnlockedLevels();
     const maxUnlocked = Math.max(...unlocked);
@@ -232,6 +385,15 @@ module.exports = {
   },
 
   _syncDerived(next) {
+    if (state.synInflateRun) {
+      const idx = state.synPumpStartIdx + state.synQueueIdx;
+      const item = state.synInflateQueue[state.synQueueIdx] || state.synAllBalloons[idx] || {};
+      state.currentColor = item.color || '#b388ff';
+      state.currentGlow = item.glowColor || '#7c4dff';
+      state.currentShape = item.shape || 'round';
+      state.currentEmoji = item.emoji || '🎈';
+      return;
+    }
     const idx = next && next.currentLevelIdx !== undefined ? next.currentLevelIdx : state.currentLevelIdx;
     const lv = LEVELS[idx % LEVELS.length];
     const bg = lv.background || 'candy';
@@ -264,6 +426,10 @@ module.exports = {
 
   /** 是否绘制全屏黑蒙层（仅弹窗，不含会自动消失的 toast） */
   _battleDimBackdrop() {
+    if (state.synInflateRun) {
+      return !!(this._anyModalBlockingPumpTip()
+        || (state.gameState === 'success' && !state.showLevelComplete));
+    }
     return !!(this._anyModalBlockingPumpTip()
       || (state.gameState === 'success' && state.balloonInLevel < 9 && !state.showLevelComplete));
   },
@@ -295,7 +461,9 @@ module.exports = {
     ctx.restore();
 
     const subY = navTitleY + 22;
-    const subText = '🚩 第 ' + (state.currentLevelIdx + 1) + ' 关 ｜ ' + state.level.name;
+    const subText = state.synInflateRun
+      ? '🚩 合成气球束关卡'
+      : ('🚩 第 ' + (state.currentLevelIdx + 1) + ' 关 ｜ ' + state.level.name);
     drawText(ctx, subText, W / 2, subY, 'rgba(255,255,255,0.55)', 12, 'center', undefined, 400);
 
     // ─── 「本关进度」大卡片（标题区 + 进度格） ─────────
@@ -317,10 +485,10 @@ module.exports = {
     ctx.save();
     roundRect(ctx, 12, panelTop, W - 24, panelH, 18);
     const panelGrad = ctx.createLinearGradient(0, panelTop, 0, panelTop + panelH);
-    panelGrad.addColorStop(0, 'rgba(255,255,255,0.05)');
-    panelGrad.addColorStop(1, 'rgba(20,8,40,0.55)');
+    panelGrad.addColorStop(0, 'rgba(6,4,18,0.92)');
+    panelGrad.addColorStop(1, 'rgba(3,2,12,0.92)');
     ctx.fillStyle = panelGrad; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,80,200,0.22)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = 'rgba(180,60,200,0.28)'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.restore();
 
     // 头部：本关进度 / 重开次数 / 进度 pill —— 左右与小卡片区严格对齐
@@ -329,11 +497,11 @@ module.exports = {
     const cardsCenterX = (cardsLeft + cardsRight) / 2;
     const headerY = panelTop + panelGap;
     const headerCY = headerY + headerH / 2;
-    drawText(ctx, '本关进度', cardsLeft, headerCY, '#ffffff', 14, 'left', undefined, 700);
+    drawText(ctx, state.synInflateRun ? '合成进度' : '本关进度', cardsLeft, headerCY, '#ffffff', 14, 'left', undefined, 700);
     drawText(ctx, '重开次数 ' + state.restartChances, cardsCenterX, headerCY, 'rgba(255,255,255,0.7)', 12, 'center', undefined, 500);
 
-    // 本关进度 pill（右边沿对齐卡片右沿）
-    const pillText = '✦ ' + state.completedInLevel + '/10';
+    const progressTotal = state.synInflateRun ? state.synTotalCount : 10;
+    const pillText = '✦ ' + state.completedInLevel + '/' + progressTotal;
     const pillTW = measureText(ctx, pillText, 12, 600);
     const pillW = Math.max(72, Math.ceil(pillTW + 22));
     const pillX = cardsRight - pillW;
@@ -346,7 +514,7 @@ module.exports = {
     ctx.strokeStyle = 'rgba(255,215,0,0.45)'; ctx.lineWidth = 1.2; ctx.stroke();
     ctx.restore();
     drawText(ctx, pillText, pillX + pillW / 2, pillY + 13, '#ffd740', 12, 'center', undefined, 600);
-    if (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone) {
+    if (!state.synInflateRun && (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone)) {
       UI.manager.addTouchable(pillX, pillY, pillW, 26, 'openLegendSelect');
     }
 
@@ -434,7 +602,7 @@ module.exports = {
           } else {
             drawText(ctx, '👑', bx, by, '#fff', badgeR * 1.2, 'center');
           }
-          if (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone) {
+          if (!state.synInflateRun && (state.balloonInLevel < 9 || state.legendSlot10ChoiceDone)) {
             UI.manager.addTouchable(cx - cardSize / 2, rowY, cardSize, cardSize, 'openLegendSelect');
           }
         }
@@ -444,8 +612,8 @@ module.exports = {
     // 传奇购买提示（第十格前提示；第十格用轮播 + 弹窗引导）
     const panelBottom = panelTop + panelH;
     let belowY = panelBottom + 8;
-    const hintH = (state.paidBalloonUsed || state.balloonInLevel >= 9) ? 0 : 18;
-    if (!state.paidBalloonUsed && state.balloonInLevel < 9) {
+    const hintH = (!state.synInflateRun && (state.paidBalloonUsed || state.balloonInLevel >= 9)) ? 0 : (state.synInflateRun ? 0 : 18);
+    if (!state.synInflateRun && !state.paidBalloonUsed && state.balloonInLevel < 9) {
       drawText(ctx, '可以购买传奇气球替换第十个气球', W / 2,
         belowY + 6, 'rgba(255,255,255,0.7)', 12, 'center');
       UI.manager.addTouchable(W / 2 - 110, belowY - 4, 220, 22, 'openLegendSelect');
@@ -521,13 +689,45 @@ module.exports = {
     if (state.showAbandonConfirm) this._drawAbandonConfirm(ctx, W, H);
     if (state.showResetChallengeConfirm) this._drawResetChallengeConfirm(ctx, W, H);
     if (state.showPrivacy) this._drawPrivacyModal(ctx, W, H);
-    if (state.gameState === 'success' && state.balloonInLevel < 9 && !state.showLevelComplete) {
+    if (state.gameState === 'success' && !state.showLevelComplete
+      && (state.synInflateRun || state.balloonInLevel < 9)) {
       this._drawSuccessModal(ctx, W, H);
     }
   },
 
   // ─── Progress slots builder ────────────────
   _buildSlots() {
+    if (state.synInflateRun) {
+      const all = state.synAllBalloons || [];
+      const currentIdx = state.synPumpStartIdx + state.synQueueIdx;
+      const successIdx = state.gameState === 'success'
+        ? Math.min(all.length, currentIdx + 1)
+        : state.completedInLevel;
+      const slots = all.map((item, i) => ({
+        id: i,
+        emoji: item.emoji,
+        shape: item.shape,
+        color: item.color,
+        glowColor: item.glowColor,
+        status: i < successIdx ? 'done' : (i === currentIdx ? 'current' : 'empty'),
+        isPaid: true,
+        isBought: true,
+        carouselDefault: null,
+        carouselLegend: null
+      }));
+      while (slots.length < 10) {
+        slots.push({
+          id: slots.length,
+          emoji: '',
+          status: 'empty',
+          isPaid: false,
+          isBought: false,
+          carouselDefault: null,
+          carouselLegend: null
+        });
+      }
+      return slots;
+    }
     const seq = getSequence(state.level.id);
     const equippedId = store.getEquippedLegend(state.currentLevelIdx);
     const equippedMeta = equippedId ? BALLOON_TYPES.find(b => b.id === equippedId) : null;
@@ -594,7 +794,7 @@ module.exports = {
     }
 
     if (type === 'start' || type === 'begin') {
-      if (state.balloonInLevel === 9 && !state.legendSlot10ChoiceDone) return true;
+      if (!state.synInflateRun && state.balloonInLevel === 9 && !state.legendSlot10ChoiceDone) return true;
       if (!state.isGameActive || state.gameState === 'success' || state.isHolding) return true;
 
       // 置灰态：再次唤起「继续挑战」弹窗，不进入充气
@@ -648,9 +848,8 @@ module.exports = {
       const next = Math.min(state.pressure + (0.8 + Math.random() * 0.4), 100);
       state.pressure = next;
       if (next >= 100) {
-        clearInterval(this._pumpTimer); this._pumpTimer = null;
-        state.isHolding = false;
-        this._stopPumpAudio();
+        clearInterval(this._pumpTimer);
+        this._pumpTimer = null;
         this._failPump('explode', 100);
       }
     }, 50);
@@ -658,6 +857,16 @@ module.exports = {
 
   _stopPump() {
     if (this._pumpTimer) { clearInterval(this._pumpTimer); this._pumpTimer = null; }
+    this._stopPumpAudio();
+  },
+
+  /** 成功/失败弹窗出现前：立刻停掉打气循环音（含定时器与按住态） */
+  _haltPumpSoundImmediately() {
+    if (this._pumpTimer) {
+      clearInterval(this._pumpTimer);
+      this._pumpTimer = null;
+    }
+    state.isHolding = false;
     this._stopPumpAudio();
   },
 
@@ -748,6 +957,7 @@ module.exports = {
     }
   },
   _playExplosionAudio() {
+    this._haltPumpSoundImmediately();
     if (!isSoundOn()) return;
     this._ensureExplodeAudio();
     const a = this._explodeAudio;
@@ -814,6 +1024,7 @@ module.exports = {
     }
   },
   _playOneShotBattleAudio(kind, delayMs) {
+    this._haltPumpSoundImmediately();
     if (!isSoundOn()) return;
     this._ensureOneShotBattleAudio(kind);
     const a = this['_' + kind + 'Audio'];
@@ -848,13 +1059,26 @@ module.exports = {
     const { targetMin, targetMax } = state.level;
     if (p >= targetMin && p <= targetMax) {
       state.isPerfect = p >= targetMin + 0.5 && p <= targetMax - 0.5;
+      if (state.synInflateRun) {
+        const isLast = state.synQueueIdx >= state.synInflateQueue.length - 1;
+        if (isLast) {
+          this._haltPumpSoundImmediately();
+          state.gameState = 'success';
+          setTimeout(() => this._handleNextBalloon(), 80);
+          return;
+        }
+        this._playOneShotBattleAudio('chenggong', 0);
+        state.gameState = 'success';
+        return;
+      }
       // 第 10 个：不播成功弹窗音，通关气球束弹窗在 _handleNextBalloon 里播 mofa
       if (state.balloonInLevel === 9) {
+        this._haltPumpSoundImmediately();
         state.gameState = 'success';
         setTimeout(() => this._handleNextBalloon(), 80);
         return;
       }
-      this._playOneShotBattleAudio('chenggong', 48);
+      this._playOneShotBattleAudio('chenggong', 0);
       state.gameState = 'success';
       return;
     }
@@ -863,6 +1087,7 @@ module.exports = {
   },
 
   _failPump(reason, p) {
+    this._haltPumpSoundImmediately();
     state.isExploding = reason === 'explode';
     state.flashWhite = reason === 'explode';
     state.pressure = 0; state.gameState = 'fail'; state.isGameActive = false;
@@ -881,6 +1106,34 @@ module.exports = {
   },
 
   _resetInLevel() {
+    if (state.synInflateRun) {
+      const pre = (state.synAllBalloons || []).slice(0, state.synPumpStartIdx).map(item => ({
+        balloonId: item.balloonId,
+        name: item.name,
+        emoji: item.emoji,
+        shape: item.shape,
+        color: item.color,
+        glowColor: item.glowColor,
+        isPaid: true
+      }));
+      state.pressure = 0;
+      state.isHolding = false;
+      state.isExploding = false;
+      state.flashWhite = false;
+      state.gameState = 'idle';
+      state.isGameActive = true;
+      state.failCount = 0;
+      state.synQueueIdx = 0;
+      state.completedBalloonsList = pre;
+      state.completedInLevel = pre.length;
+      state.balloonInLevel = state.synPumpStartIdx;
+      state.pumpDisabled = false;
+      state.failFresh = false;
+      state.failSamplePressure = null;
+      resetParticles();
+      this._syncDerived({});
+      return;
+    }
     const lv = state.currentLevelIdx + 1;
     const retries = store.getFreeRetries(lv);
     state.pressure = 0; state.isHolding = false; state.isExploding = false; state.flashWhite = false;
@@ -900,6 +1153,10 @@ module.exports = {
   },
 
   _handleNextBalloon() {
+    if (state.synInflateRun) {
+      this._handleSynNextBalloon();
+      return;
+    }
     const nextCompleted = state.completedInLevel + 1;
     const nextBalloon = state.balloonInLevel + 1;
     const seq = getSequence(state.level.id);
@@ -950,7 +1207,13 @@ module.exports = {
         const durationMs = anchor ? (Date.now() - anchor) : 0;
         store.addClearRecord({ isFullRun: true, durationMs, hasLegend: isPaidSlot });
         try { store.clearFullRunAnchor(); } catch (_) {}
-        try { store.recordFullClear(); } catch (_) {}
+        try {
+          require('../cloud-team').recordFullClear('level_04')
+            .then((r) => {
+              if (r && r.success) return require('../cloud-team').syncTeamFromCloud();
+            })
+            .catch((e) => { console.warn('[battle] recordFullClear', e); });
+        } catch (_) {}
       }
       state.completedBalloonsList = list; state.completedInLevel = 10; state.balloonInLevel = 0;
       state.showLevelComplete = true; state.levelBonusPts = bonusPts;
@@ -1045,7 +1308,7 @@ module.exports = {
     drawText(ctx, '欢迎来到不准爆！', W / 2, my + py + heroH + gap + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
     drawWrappedText(ctx, '长按圆形按钮为气球打气，在绿色区域及时松开，否则气球会爆炸哦～', mx + px, my + py + heroH + gap + titleH + gap, mw - px * 2, 22, 'rgba(255,255,255,0.7)', 14);
 
-    const btn = drawButtonGradient(ctx, mx + px, my + mh - py - btnH, mw - px * 2, btnH, '我会了，开始吧', gradientPink, '#fff', 14, 14, undefined, 700);
+    const btn = drawButtonGradient(ctx, mx + px, my + mh - py - btnH, mw - px * 2, btnH, '开始吧', gradientPink, '#fff', 14, 14, undefined, 700);
     this.manager.addTouchable(btn.x, btn.y, btn.w, btn.h, 'closeTutorial');
     ctx.restore();
   },
@@ -1076,7 +1339,8 @@ module.exports = {
     const my = (H - mh) / 2;
 
     const adLabel = '看广告再试一次';
-    const resetLabel = isAdOnly ? '重置挑战' : ('重新开始本关（剩余重开次数 ' + state.restartChances + '）');
+    const resetLabel = isAdOnly ? '重置挑战' : '重新开始本关';
+    const failBtnFs = 14;
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(244,114,182,0.45)', 24);
@@ -1133,7 +1397,7 @@ module.exports = {
     ctx.shadowColor = 'rgba(244,114,182,0.32)'; ctx.shadowBlur = 10;
     ctx.fill(); ctx.shadowBlur = 0;
     ctx.restore();
-    drawText(ctx, adLabel, W / 2, actionsTop + btnH / 2, '#ffffff', 14, 'center', 'rgba(0,0,0,0.25)', 700);
+    drawText(ctx, adLabel, W / 2, actionsTop + btnH / 2, '#ffffff', failBtnFs, 'center', 'rgba(0,0,0,0.25)', 700);
     this.manager.addTouchable(btnX, actionsTop, btnW, btnH, 'watchAdContinue');
 
     if (hasSecondary) {
@@ -1143,12 +1407,12 @@ module.exports = {
       ctx.fillStyle = 'rgba(244,114,182,0.06)'; ctx.fill();
       ctx.strokeStyle = 'rgba(244,114,182,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
-      drawText(ctx, resetLabel, W / 2, sy + btnH / 2, '#f472b6', 12, 'center', undefined, 600);
+      drawText(ctx, resetLabel, W / 2, sy + btnH / 2, '#f472b6', failBtnFs, 'center', undefined, 600);
       this.manager.addTouchable(btnX, sy, btnW, btnH, isAdOnly ? 'openResetChallengeConfirm' : 'restartFromFail');
     }
 
     const cancelY = actionsTop + btnH + (hasSecondary ? btnH + gap : 0) + gap;
-    drawText(ctx, '取消', W / 2, cancelY + 13, 'rgba(255,255,255,0.7)', 14, 'center', undefined, 500);
+    drawText(ctx, '取消', W / 2, cancelY + 13, 'rgba(255,255,255,0.7)', failBtnFs, 'center', undefined, 500);
     this.manager.addTouchable(btnX, cancelY, btnW, 28, 'cancelFailModal');
     ctx.restore();
 
@@ -1316,10 +1580,15 @@ module.exports = {
     let curY = titleY + titleH + gap;
 
     // 进度圆点 + 计数同行
-    const totalDots = 10;
+    const totalDots = state.synInflateRun ? state.synTotalCount : 10;
     const dotR = 4, dotOnR = 6, dotGap = 6;
     const dotsWidth = totalDots * (dotR * 2 + dotGap) - dotGap;
-    const cnt = (state.balloonInLevel + 1) + ' / 10';
+    const cntVal = state.synInflateRun
+      ? (state.gameState === 'success'
+        ? state.synPumpStartIdx + state.synQueueIdx + 1
+        : state.completedInLevel)
+      : (state.balloonInLevel + 1);
+    const cnt = cntVal + ' / ' + totalDots;
     const cntFS = 14;
     const cntTW = measureText(ctx, cnt, cntFS, 700);
     const inlineW = dotsWidth + 16 + cntTW;
@@ -1327,7 +1596,7 @@ module.exports = {
     for (let i = 0; i < totalDots; i++) {
       const dx = inlineX + i * (dotR * 2 + dotGap) + dotR;
       const dy = curY + dotsH / 2;
-      const isOn = i < (state.balloonInLevel + 1);
+      const isOn = i < cntVal;
       ctx.save();
       ctx.beginPath();
       ctx.arc(dx, dy, isOn ? dotOnR : dotR, 0, Math.PI * 2);
@@ -1340,9 +1609,13 @@ module.exports = {
     curY += dotsH + gap;
 
     // 描述
-    const remain = 9 - state.balloonInLevel;
+    const remain = state.synInflateRun
+      ? Math.max(0, state.synTotalCount - state.completedInLevel)
+      : (9 - state.balloonInLevel);
     if (remain > 0) {
-      drawText(ctx, '还剩 ' + remain + ' 个气球，继续加油！', W / 2, curY + descH / 2, 'rgba(255,255,255,0.7)', 14, 'center', undefined, 400);
+      drawText(ctx, state.synInflateRun
+        ? ('还剩 ' + remain + ' 个传奇气球，继续加油！')
+        : ('还剩 ' + remain + ' 个气球，继续加油！'), W / 2, curY + descH / 2, 'rgba(255,255,255,0.7)', 14, 'center', undefined, 400);
     }
     curY += descH + gap * 2;
 
@@ -1367,7 +1640,7 @@ module.exports = {
     const titleH = 22, gap = 10, rowH = 40, actionH = 44, footerH = 28;
     const settings = store.getSettings();
     const actions = [
-      { text: '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
+      { text: state.synInflateRun ? '放弃合成' : '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
     ];
     const actionsBlockH = actions.length * actionH + (actions.length - 1) * gap;
     const mh = py + titleH + gap + rowH * 3 + gap + actionsBlockH + footerH + py;
@@ -1517,7 +1790,9 @@ module.exports = {
 
     const bannerY = my + pyTop;
     const trophySize = 22, trophyGap = 8;
-    const bannerText = '第 ' + (state.currentLevelIdx + 1) + ' 关全部完成！';
+    const bannerText = state.synInflateComplete
+      ? '合成气球束完成！'
+      : ('第 ' + (state.currentLevelIdx + 1) + ' 关全部完成！');
     const bannerTW = measureText(ctx, bannerText, 18, 700);
     const bannerTotalW = trophySize + trophyGap + bannerTW + trophyGap + trophySize;
     const bannerStartX = W / 2 - bannerTotalW / 2;
@@ -1535,25 +1810,38 @@ module.exports = {
     drawText(ctx, bannerText, W / 2, bannerY + 18, '#86efac', 18, 'center', undefined, 800);
     ctx.shadowBlur = 0;
     ctx.restore();
-    drawText(ctx, state.level.name + ' · 10 个气球全部充气成功！', W / 2, bannerY + 42, 'rgba(255,255,255,0.65)', 12, 'center');
+    const bannerSub = state.synInflateComplete
+      ? ('消耗 ' + state.synTotalCount + ' 个传奇气球 · 全部充气成功！')
+      : (state.level.name + ' · 10 个气球全部充气成功！');
+    drawText(ctx, bannerSub, W / 2, bannerY + 42, 'rgba(255,255,255,0.65)', 12, 'center');
 
     const bqX = mx + px;
     const bqY = my + pyTop + bannerH + gapBannerBouquet;
     const bqW = mw - px * 2;
     const elapsedSec = (Date.now() - (state.bouquetAnimStartMs || Date.now())) / 1000;
-    drawBouquetCompletionAnim(ctx, (state.completedBalloonsList || []).map(_normalizeBouquetBalloon), bqX, bqY, bqW, bouquetH, elapsedSec);
+    drawBouquetCompletionAnim(
+      ctx,
+      (state.completedBalloonsList || []).map(_normalizeBouquetBalloon),
+      bqX, bqY, bqW, bouquetH, elapsedSec,
+      { layout: 'centered', offsetY: 32 }
+    );
 
     const statsY = bqY + bouquetH + statsGap;
-    const statW = (mw - px * 2 - 12) / 3;
-    const statIcons = ['images/ui/balloon.png', 'images/ui/crown.png', 'images/ui/sparkle.png'];
-    const statNums = ['10', '第' + (state.currentLevelIdx + 1) + '关', '+' + state.levelBonusPts];
-    const statLabels = ['完成气球', '关卡', '获得积分'];
+    const statGap = 8;
+    const statW = (mw - px * 2 - statGap) / 2;
+    const statIcons = ['images/ui/balloon.png', 'images/ui/crown.png'];
+    const statNums = state.synInflateComplete
+      ? [String(state.synTotalCount), '合成']
+      : ['10', '第' + (state.currentLevelIdx + 1) + '关'];
+    const statLabels = state.synInflateComplete
+      ? ['完成气球', '类型']
+      : ['完成气球', '关卡'];
     const iconSize = Math.min(20, Math.max(16, Math.floor(statsH * 0.32)));
     const iconTop = statsY + Math.max(2, statsH * 0.08);
     const numCy = statsY + statsH * 0.52;
     const labCy = statsY + statsH * 0.8;
-    [0, 1, 2].forEach(i => {
-      const sx = mx + px + i * (statW + 6);
+    [0, 1].forEach(i => {
+      const sx = mx + px + i * (statW + statGap);
       ctx.save();
       roundRect(ctx, sx, statsY, statW, statsH, 10);
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
@@ -1566,7 +1854,7 @@ module.exports = {
       if (statIconImg) {
         drawImage(ctx, statIcons[i], sx + statW / 2 - iconSize / 2, iconTop, iconSize, iconSize);
       } else {
-        drawText(ctx, ['🎈', '👑', '✨'][i], sx + statW / 2, statsY + statsH * 0.22, '#86efac', Math.min(16, iconSize), 'center');
+        drawText(ctx, ['🎈', '👑'][i], sx + statW / 2, statsY + statsH * 0.22, '#86efac', Math.min(16, iconSize), 'center');
       }
       drawText(ctx, statNums[i], sx + statW / 2, numCy, '#ecfdf5', 14, 'center', undefined, 700);
       drawText(ctx, statLabels[i], sx + statW / 2, labCy, 'rgba(167,243,208,0.55)', 12, 'center', undefined, 400);
@@ -1580,10 +1868,12 @@ module.exports = {
       g.addColorStop(1, 'rgba(125,211,192,0.08)');
       return g;
     };
-    const b1 = drawButtonGradient(ctx, mx + px, actionsY, btnW, btn1H, '📤 分享气球束给好友', shareGrad, '#a7f3d0', 14, 12, 'rgba(134,239,172,0.25)', 500);
+    const b1 = drawButtonGradient(ctx, mx + px, actionsY, btnW, btn1H, '分享气球束', shareGrad, '#a7f3d0', 14, 12, 'rgba(134,239,172,0.25)', 500);
     this.manager.addTouchable(b1.x, b1.y, b1.w, b1.h, 'openSharePreview');
-    const b2text = state.currentLevelIdx < 3 ? '继续闯关 →' : '已通关，返回首页';
-    const b2h = state.currentLevelIdx < 3 ? 'levelCompleteNext' : 'levelCompleteHome';
+    const b2text = state.synInflateComplete
+      ? '完成'
+      : (state.currentLevelIdx < 3 ? '下一关' : '返回首页');
+    const b2h = state.synInflateComplete ? 'synInflateDone' : (state.currentLevelIdx < 3 ? 'levelCompleteNext' : 'levelCompleteHome');
     const mainGrad = (c, gx, gy, gw, gh) => {
       const g = c.createLinearGradient(gx, gy, gx + gw, gy + gh);
       g.addColorStop(0, '#86efac');
@@ -1611,7 +1901,43 @@ module.exports = {
     resetParticles(); this._syncDerived({ currentLevelIdx: nextIdx, balloonInLevel: 0, completedInLevel: 0 });
   },
   levelCompleteHome() { this.manager.switchTo('home'); },
-  openSharePreview() { showToast('分享功能已就绪'); },
+  synInflateDone() {
+    state.showLevelComplete = false;
+    this._clearSynInflateState();
+    this.manager.switchTo('collection', { activeTab: 'bouquet' });
+  },
+  openSharePreview() {
+    if (state.synInflateComplete) {
+      const balloons = normalizeBalloonList(
+        (state.completedBalloonsList || []).map(_normalizeBouquetBalloon)
+      );
+      showToast('正在生成分享图…');
+      shareBouquetAsImage({
+        balloons,
+        shareTitle: '我收集了传奇合成气球束，快来看看！',
+        posterTitle: '传奇合成气球束',
+        subtitle: '消耗 ' + state.synTotalCount + ' 个传奇 · 合成专属',
+        viewerLanding: true
+      }).catch(() => {});
+      return;
+    }
+    const level = state.currentLevelIdx + 1;
+    const levelName = state.level && state.level.name ? state.level.name : '';
+    const balloons = normalizeBalloonList(
+      (state.completedBalloonsList || []).map(_normalizeBouquetBalloon)
+    );
+    const shareTitle = '我通关了第' + level + '关，快来看看这束气球！';
+    const posterTitle = '第 ' + level + ' 关气球束';
+    const subtitle = levelName ? levelName + ' · 10 个气球全部充气成功' : '10 个气球全部充气成功';
+    showToast('正在生成分享图…');
+    shareBouquetAsImage({
+      balloons,
+      shareTitle,
+      posterTitle,
+      subtitle,
+      viewerLanding: true
+    }).catch(() => {});
+  },
 
   // ─── 第十个气球：默认 / 购买传奇 / 已有可装备 ──
   _getSlot10EquippableLegends() {
@@ -1991,7 +2317,7 @@ module.exports = {
     const btnX = cardX + px;
     const btnW = cardW - px * 2;
     const btnY = bodyTop + descBoxH + gap;
-    const ok = drawButtonGradient(ctx, btnX, btnY, btnW, btnH, '支付 ' + LEGEND_PRICE_YUAN.toFixed(2) + ' 元', gradientPink, '#fff', 14, 16, 'rgba(244,114,182,0.32)', 700);
+    const ok = drawButtonGradient(ctx, btnX, btnY, btnW, btnH, '支付' + LEGEND_PRICE_YUAN.toFixed(2) + '元', gradientPink, '#fff', 14, 16, 'rgba(244,114,182,0.32)', 700);
     this.manager.addTouchable(ok.x, ok.y, ok.w, ok.h, 'confirmLegendPay');
     const cancelY = btnY + btnH + gap;
     ctx.save();
@@ -2063,25 +2389,31 @@ module.exports = {
     purchaseLegendBalloon(bId, { meta, priceYuan: LEGEND_PRICE_YUAN })
       .then((payResult) => {
         const channel = payResult.channel || 'mock_pay';
+        const finish = () => {
+          store.addTransaction({
+            type: 'purchase',
+            balloonId: bId,
+            balloonName: meta ? meta.name : bId,
+            quantity: 1,
+            amountYuan: LEGEND_PRICE_YUAN,
+            status: 'success',
+            channel,
+            outTradeNo: payResult.outTradeNo || ''
+          });
+          store.equipLegend(state.currentLevelIdx, bId);
+          state.paidBalloonUsed = true;
+          state.showLegendPayConfirm = false;
+          state.legendPayBalloonId = null;
+          scene._syncDerived({});
+          showToast(channel === 'cloud_pay' ? '支付成功，传奇气球已装上' : '传奇气球已装上（演示）');
+          state.showLegendSelect = false;
+          if (state.balloonInLevel === 9) scene._finishLegendSlot10Choice();
+        };
+        if (channel === 'cloud_pay') {
+          return syncBalloonInventoryFromCloud().then(finish);
+        }
         store.addBalloon(bId, 1, 'purchase');
-        store.addTransaction({
-          type: 'purchase',
-          balloonId: bId,
-          balloonName: meta ? meta.name : bId,
-          quantity: 1,
-          amountYuan: LEGEND_PRICE_YUAN,
-          status: 'success',
-          channel,
-          outTradeNo: payResult.outTradeNo || ''
-        });
-        store.equipLegend(state.currentLevelIdx, bId);
-        state.paidBalloonUsed = true;
-        state.showLegendPayConfirm = false;
-        state.legendPayBalloonId = null;
-        scene._syncDerived({});
-        showToast(channel === 'cloud_pay' ? '支付成功，传奇气球已装上' : '传奇气球已装上（演示）');
-        state.showLegendSelect = false;
-        if (state.balloonInLevel === 9) scene._finishLegendSlot10Choice();
+        finish();
       })
       .catch((err) => {
         console.warn('[battle.confirmLegendPay]', err);
@@ -2179,6 +2511,11 @@ module.exports = {
   confirmAbandon() {
     state.showAbandonConfirm = false;
     state.showSettings = false;
+    if (state.synInflateRun) {
+      this._clearSynInflateState();
+      this.manager.switchTo('collection', { activeTab: 'bouquet' });
+      return;
+    }
     store.abandonChallengeResetProgress();
     this.manager.switchTo('home');
   },

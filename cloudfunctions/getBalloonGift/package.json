@@ -1,0 +1,9 @@
+{
+  "name": "getBalloonGift",
+  "version": "1.0.0",
+  "description": "preview balloon gift for receive modal",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

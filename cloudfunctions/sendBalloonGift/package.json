@@ -1,0 +1,9 @@
+{
+  "name": "sendBalloonGift",
+  "version": "1.0.0",
+  "description": "create balloon gift and deduct sender inventory",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

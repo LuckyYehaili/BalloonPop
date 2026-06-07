@@ -32,30 +32,30 @@ const THEME_GLOW = {
 
 /** 软光斑：归一化坐标 + 漂移周期 */
 const ORBS = [
-  { x: 0.12, y: 0.14, r: 28, period: 11, phase: 0.0 },
-  { x: 0.88, y: 0.18, r: 34, period: 13, phase: 0.2 },
-  { x: 0.08, y: 0.42, r: 22, period: 9, phase: 0.45 },
-  { x: 0.92, y: 0.38, r: 26, period: 10, phase: 0.65 },
-  { x: 0.18, y: 0.72, r: 32, period: 14, phase: 0.15 },
-  { x: 0.82, y: 0.68, r: 30, period: 12, phase: 0.85 },
-  { x: 0.50, y: 0.08, r: 20, period: 8, phase: 0.33 },
-  { x: 0.06, y: 0.86, r: 24, period: 15, phase: 0.55 },
-  { x: 0.94, y: 0.82, r: 22, period: 11, phase: 0.72 },
-  { x: 0.35, y: 0.22, r: 16, period: 7, phase: 0.9 },
-  { x: 0.68, y: 0.52, r: 18, period: 9, phase: 0.12 },
-  { x: 0.42, y: 0.88, r: 20, period: 10, phase: 0.4 }
+  { x: 0.12, y: 0.14, r: 14, period: 11, phase: 0.0 },
+  { x: 0.88, y: 0.18, r: 17, period: 13, phase: 0.2 },
+  { x: 0.08, y: 0.42, r: 11, period: 9, phase: 0.45 },
+  { x: 0.92, y: 0.38, r: 13, period: 10, phase: 0.65 },
+  { x: 0.18, y: 0.72, r: 16, period: 14, phase: 0.15 },
+  { x: 0.82, y: 0.68, r: 15, period: 12, phase: 0.85 },
+  { x: 0.50, y: 0.08, r: 10, period: 8, phase: 0.33 },
+  { x: 0.06, y: 0.86, r: 12, period: 15, phase: 0.55 },
+  { x: 0.94, y: 0.82, r: 11, period: 11, phase: 0.72 },
+  { x: 0.35, y: 0.22, r: 8, period: 7, phase: 0.9 },
+  { x: 0.68, y: 0.52, r: 9, period: 9, phase: 0.12 },
+  { x: 0.42, y: 0.88, r: 10, period: 10, phase: 0.4 }
 ];
 
 /** 小装饰：emoji + 漂浮 */
 const FLOAT_DECOR = [
-  { emoji: '✨', x: 0.1, y: 0.28, size: 14, period: 4.2, phase: 0.1 },
-  { emoji: '💫', x: 0.9, y: 0.32, size: 16, period: 5.0, phase: 0.35 },
-  { emoji: '🎈', x: 0.14, y: 0.58, size: 18, period: 4.8, phase: 0.6 },
-  { emoji: '⭐', x: 0.86, y: 0.55, size: 15, period: 4.5, phase: 0.8 },
-  { emoji: '✦', x: 0.22, y: 0.16, size: 12, period: 3.8, phase: 0.25 },
-  { emoji: '❋', x: 0.78, y: 0.14, size: 13, period: 4.0, phase: 0.5 },
-  { emoji: '🫧', x: 0.08, y: 0.78, size: 17, period: 5.2, phase: 0.15 },
-  { emoji: '✨', x: 0.92, y: 0.76, size: 14, period: 4.6, phase: 0.7 }
+  { emoji: '✨', x: 0.1, y: 0.28, size: 7, period: 4.2, phase: 0.1 },
+  { emoji: '💫', x: 0.9, y: 0.32, size: 8, period: 5.0, phase: 0.35 },
+  { emoji: '🎈', x: 0.14, y: 0.58, size: 9, period: 4.8, phase: 0.6 },
+  { emoji: '⭐', x: 0.86, y: 0.55, size: 8, period: 4.5, phase: 0.8 },
+  { emoji: '✦', x: 0.22, y: 0.16, size: 6, period: 3.8, phase: 0.25 },
+  { emoji: '❋', x: 0.78, y: 0.14, size: 6, period: 4.0, phase: 0.5 },
+  { emoji: '🫧', x: 0.08, y: 0.78, size: 8, period: 5.2, phase: 0.15 },
+  { emoji: '✨', x: 0.92, y: 0.76, size: 7, period: 4.6, phase: 0.7 }
 ];
 
 function _orbMotion(period, phase, t) {
@@ -64,7 +64,7 @@ function _orbMotion(period, phase, t) {
   return {
     dx: wave * 6,
     dy: Math.cos(p * Math.PI * 2) * 10 - 5,
-    alpha: 0.22 + (wave * 0.5 + 0.5) * 0.18
+    alpha: 0.14 + (wave * 0.5 + 0.5) * 0.1
   };
 }
 
@@ -86,9 +86,9 @@ function drawBreathingBackground(ctx, W, H, bgKey, t) {
 
   const glow = THEME_GLOW[bgKey] || THEME_GLOW.candy;
   const blobs = [
-    { x: 0.2, y: 0.25, r: 0.55, phase: 0 },
-    { x: 0.8, y: 0.7, r: 0.5, phase: 1.8 },
-    { x: 0.5, y: 0.5, r: 0.42, phase: 3.1 }
+    { x: 0.2, y: 0.25, r: 0.28, phase: 0 },
+    { x: 0.8, y: 0.7, r: 0.25, phase: 1.8 },
+    { x: 0.5, y: 0.5, r: 0.21, phase: 3.1 }
   ];
   blobs.forEach((b, i) => {
     const pulse = 0.5 + 0.5 * Math.sin(t * 0.55 + b.phase);
@@ -134,12 +134,12 @@ function drawFloatDecor(ctx, W, H, t) {
     const bob = Math.sin(phase * Math.PI * 2);
     const px = d.x * W + bob * 4;
     const py = d.y * H + bob * 8 - 4;
-    const alpha = 0.28 + (bob * 0.5 + 0.5) * 0.22;
+    const alpha = 0.2 + (bob * 0.5 + 0.5) * 0.14;
     const fs = d.size;
     ctx.font = fs + 'px sans-serif';
     ctx.globalAlpha = alpha;
-    ctx.shadowColor = 'rgba(255,255,255,0.25)';
-    ctx.shadowBlur = 6;
+    ctx.shadowColor = 'rgba(255,255,255,0.2)';
+    ctx.shadowBlur = 3;
     ctx.fillText(d.emoji, px, py);
     ctx.shadowBlur = 0;
   });
