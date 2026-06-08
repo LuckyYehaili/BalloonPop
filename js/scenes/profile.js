@@ -66,7 +66,7 @@ const PROFILE_IMG = {
   actionTuichu:   'images/ui/tuichu.png',
   recordJilu:     'images/ui/jilu.png',
   recordShijian:  'images/ui/shijian.png',
-  actionOrder:    'images/ui/jilu.png',
+  actionOrder:    'images/ui/dingdan.png',
   actionSetting:  'images/ui/setting.png'
 };
 
@@ -786,8 +786,14 @@ module.exports = {
       const rm = drawButtonGradient(ctx, fieldX + fieldW - 68, imgBoxY + 20, 56, 32, '移除', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.72)', 12, 10, undefined, 600);
       scene.manager.addTouchable(rm.x, rm.y, rm.w, rm.h, 'removeFeedbackImage');
     } else {
-      drawText(ctx, '＋ 添加配图', W / 2, imgBoxY + imgBoxH / 2, 'rgba(255,255,255,0.45)', 14, 'center', undefined, 500);
-      scene.manager.addTouchable(fieldX, imgBoxY, fieldW, imgBoxH, 'chooseFeedbackImage');
+      const gap = 10;
+      const btnW = (fieldW - 20 - gap) / 2;
+      const btnH = 36;
+      const btnY = imgBoxY + (imgBoxH - btnH) / 2;
+      const album = drawButtonGradient(ctx, fieldX + 10, btnY, btnW, btnH, '从相册选择', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.72)', 12, 10, undefined, 600);
+      const camera = drawButtonGradient(ctx, album.x + album.w + gap, btnY, btnW, btnH, '拍照', 'rgba(255,80,200,0.12)', UI.neon, 12, 10, undefined, 700);
+      scene.manager.addTouchable(album.x, album.y, album.w, album.h, 'chooseFeedbackImageAlbum');
+      scene.manager.addTouchable(camera.x, camera.y, camera.w, camera.h, 'chooseFeedbackImageCamera');
     }
 
     const btnY = my + mh - PAD - 42;
@@ -863,9 +869,9 @@ module.exports = {
     }
   },
 
-  chooseFeedbackImage() {
+  chooseFeedbackImage(sourceType) {
     if (state.feedbackSubmitting) return;
-    pickFeedbackImage()
+    pickFeedbackImage({ sourceType: sourceType || ['album', 'camera'] })
       .then((path) => {
         state.feedbackImagePath = path;
         try { loadImages([path], () => {}); } catch (_) {}
@@ -874,6 +880,14 @@ module.exports = {
         if (err && err.errMsg && String(err.errMsg).indexOf('cancel') >= 0) return;
         showToast((err && err.message) || '选图失败');
       });
+  },
+
+  chooseFeedbackImageAlbum() {
+    this.chooseFeedbackImage(['album']);
+  },
+
+  chooseFeedbackImageCamera() {
+    this.chooseFeedbackImage(['camera']);
   },
 
   removeFeedbackImage() {

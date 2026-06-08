@@ -13,10 +13,13 @@ function validateMobilePhone(value) {
   return { ok: true, phone };
 }
 
-function chooseFeedbackImage() {
+function chooseFeedbackImage(opts) {
   if (typeof wx === 'undefined') {
     return Promise.reject(new Error('当前环境不支持选图'));
   }
+  const sourceType = (opts && Array.isArray(opts.sourceType) && opts.sourceType.length)
+    ? opts.sourceType
+    : ['album', 'camera'];
   return new Promise((resolve, reject) => {
     const done = (path) => {
       if (path) resolve(path);
@@ -26,7 +29,7 @@ function chooseFeedbackImage() {
       wx.chooseMedia({
         count: 1,
         mediaType: ['image'],
-        sourceType: ['album', 'camera'],
+        sourceType,
         success(res) {
           const file = res.tempFiles && res.tempFiles[0];
           done(file && file.tempFilePath);
@@ -39,7 +42,7 @@ function chooseFeedbackImage() {
       wx.chooseImage({
         count: 1,
         sizeType: ['compressed'],
-        sourceType: ['album', 'camera'],
+        sourceType,
         success(res) {
           done(res.tempFilePaths && res.tempFilePaths[0]);
         },

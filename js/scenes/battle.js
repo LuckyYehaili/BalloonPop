@@ -2513,16 +2513,16 @@ module.exports = {
   // ─── Abandon Confirm ──────
   _drawAbandonConfirm(ctx, W, H) {
     const mw = W - 80, mx = 40;
-    const py = 22, px = 20;
-    const titleH = 22, gap = 12, descH = 92, btnH = 48;
-    const mh = py + titleH + gap + descH + gap + btnH + py;
+    const py = 20, px = 20;
+    const titleH = 24, gapTitleDesc = 14, descH = 68, gapDescBtn = 22, btnH = 48;
+    const mh = py + titleH + gapTitleDesc + descH + gapDescBtn + btnH + py;
     const my = (H - mh) / 2;
 
     ctx.save();
     this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.4)');
     drawText(ctx, '放弃挑战', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    drawWrappedText(ctx, '放弃挑战将重置闯关关卡进度，已获得的普通气球不会消失。确定放弃挑战？', mx + px, my + py + titleH + gap, mw - px * 2, CONFIRM_BODY.lh, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
-    const btnY = my + py + titleH + gap + descH + gap;
+    drawWrappedText(ctx, '放弃挑战将重置闯关关卡进度，已获得的普通气球不会消失。确定放弃挑战？', mx + px, my + py + titleH + gapTitleDesc, mw - px * 2, CONFIRM_BODY.lh, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
+    const btnY = my + py + titleH + gapTitleDesc + descH + gapDescBtn;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
     this.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'cancelAbandon');
@@ -2556,7 +2556,10 @@ module.exports = {
       showToast('获得 ' + AD_RESTART_GRANT + ' 次重开机会');
     }, 500);
   },
-  abandonChallenge() { state.showAbandonConfirm = true; },
+  abandonChallenge() {
+    state.showSettings = false;
+    state.showAbandonConfirm = true;
+  },
   confirmAbandon() {
     state.showAbandonConfirm = false;
     state.showSettings = false;
@@ -2658,7 +2661,8 @@ module.exports = {
       return true;
     }
     if (state.showLevelComplete) {
-      state.showLevelComplete = false;
+      // 通关气球束弹窗必须由用户点击「下一关 / 返回首页 / 完成」推进，
+      // 返回键只拦截，避免误关结算弹窗后露出底层成功态。
       return true;
     }
     return false;

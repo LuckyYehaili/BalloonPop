@@ -256,7 +256,10 @@ module.exports = {
 
   goBack() { this.manager.switchTo('profile'); },
 
-  handleBackButton() { return false; },
+  handleBackButton() {
+    this.goBack();
+    return true;
+  },
 
   onTouch(type, x, y) {
     const top = state._scrollTop;
