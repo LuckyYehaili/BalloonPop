@@ -1,0 +1,9 @@
+{
+  "name": "getOrderList",
+  "version": "1.0.0",
+  "description": "Query the current user's completed orders from order_list",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

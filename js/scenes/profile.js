@@ -6,9 +6,16 @@ const {
 } = require('../engine/canvas-ui');
 const { drawPageHeader } = require('../engine/page-header');
 const store = require('../store');
+const { isUserLoggedIn } = require('../auth-guard');
 const { BALLOON_TYPES } = require('../balloons');
 const UX = require('../ui-theme');
-const { getCapsuleLayout } = require('../layout-safe');
+const { getCapsuleLayout, centerModalY } = require('../layout-safe');
+const { drawFormField } = require('../engine/form-field');
+const legalModal = require('../engine/legal-modal');
+const { getUserAgreementText } = require('../legal-documents');
+const { chooseFeedbackImage: pickFeedbackImage, submitFeedbackWithImage, sanitizeMobilePhone, validateMobilePhone } = require('../cloud-feedback');
+const { deleteUserAccountCloud } = require('../cloud-account');
+const settingsModal = require('../engine/settings-modal');
 
 const UI = {
   neon: '#ff50c8',
@@ -58,7 +65,9 @@ const PROFILE_IMG = {
   actionYinsi:    'images/ui/yinsi.png',
   actionTuichu:   'images/ui/tuichu.png',
   recordJilu:     'images/ui/jilu.png',
-  recordShijian:  'images/ui/shijian.png'
+  recordShijian:  'images/ui/shijian.png',
+  actionOrder:    'images/ui/jilu.png',
+  actionSetting:  'images/ui/setting.png'
 };
 
 let state = {
@@ -73,13 +82,26 @@ let state = {
   teamName: '',
   hasTeam: false,
   soundOn: true,
+  musicOn: true,
   vibrationOn: true,
   records: [],
   showRecordsModal: false,
   showExitConfirm: false,
+  showDeleteAccountConfirm: false,
+  deleteAccountSubmitting: false,
   showAbout: false,
   aboutTitle: '',
   aboutText: '',
+  showFeedbackModal: false,
+  feedbackTitle: '',
+  feedbackContent: '',
+  feedbackPhone: '',
+  feedbackImagePath: '',
+  feedbackSubmitting: false,
+  feedbackTitleError: '',
+  feedbackContentError: '',
+  feedbackPhoneError: '',
+  feedbackEditingField: null,
   scrollY: 0,
   scrollMax: 0,
   _scrollTop: 0,
@@ -266,8 +288,11 @@ module.exports = {
     this._refresh();
     state.scrollY = 0;
     state.showRecordsModal = false;
+    settingsModal.closeSettingsModal();
     state.showExitConfirm = false;
     state.showAbout = false;
+    state.showFeedbackModal = false;
+    state.feedbackEditingField = null;
     try { loadImages(Object.values(PROFILE_IMG), () => {}); } catch (_) {}
   },
 
@@ -298,6 +323,7 @@ module.exports = {
       teamName: team ? team.name : '星云队',
       hasTeam: !!team,
       soundOn: settings.soundOn !== false,
+      musicOn: settings.musicOn !== false,
       vibrationOn: settings.vibrationOn !== false,
       records: fullRecords
     });
@@ -326,7 +352,7 @@ module.exports = {
     const contentTop = header.contentTop;
     const safeB = L.safeBottomInset || 0;
     const viewportH = Math.max(180, H - contentTop - safeB);
-    const contentH = 734;
+    const contentH = 760;
     state.scrollMax = Math.max(0, contentH - viewportH + 18);
     if (state.scrollY > state.scrollMax) state.scrollY = state.scrollMax;
     if (state.scrollY < 0) state.scrollY = 0;
@@ -345,22 +371,6 @@ module.exports = {
     const avX = cardX + 30;
     const avY = y + 58;
     _drawAvatar(ctx, avX, avY, 30, state.userNickName, state.userAvatar);
-    const editX = avX + 22;
-    const editY = avY + 20;
-    const eg = ctx.createLinearGradient(editX - 14, editY - 14, editX + 14, editY + 14);
-    eg.addColorStop(0, UI.neon);
-    eg.addColorStop(1, UI.violet);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(editX, editY, 14, 0, Math.PI * 2);
-    ctx.fillStyle = eg;
-    ctx.fill();
-    ctx.strokeStyle = UI.bg0;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
-    drawText(ctx, '✎', editX, editY + 1, '#fff', 12, 'center', undefined, 600);
-    this._addScrollTouchable(editX - 20, editY - 20, 40, 40, 'editProfile');
 
     const nameX = cardX + 78;
     const nameY = y + 42;
@@ -404,38 +414,12 @@ module.exports = {
     y += profileH + moduleGap;
     const rowX = pad;
     const rowW = W - pad * 2;
-    const settingH = 146;
-    _drawGlowCard(ctx, rowX, y, rowW, settingH, 18, UI.strokeSoft, 'rgba(255,255,255,0.03)');
-    const settingRows = [
-      { label: '游戏音效', icon: '♬', iconImg: PROFILE_IMG.settingYinxiao,  key: 'soundOn',     handler: 'toggleSound' },
-      { label: '震动反馈', icon: '◔', iconImg: PROFILE_IMG.settingZhendong, key: 'vibrationOn', handler: 'toggleVibration' }
-    ];
-    settingRows.forEach((r, i) => {
-      const ry = y + i * 72;
-      if (i > 0) {
-        ctx.fillStyle = 'rgba(255,255,255,0.06)';
-        ctx.fillRect(rowX, ry, rowW, 1);
-      }
-      const iconSize = 22;
-      const iconCx = rowX + 34;
-      const iconCy = ry + 36;
-      const img = r.iconImg ? getImage(r.iconImg) : null;
-      if (img) {
-        drawImage(ctx, r.iconImg, iconCx - iconSize / 2, iconCy - iconSize / 2, iconSize, iconSize);
-      } else {
-        drawText(ctx, r.icon, iconCx, iconCy, 'rgba(255,255,255,0.45)', 17, 'center', undefined, 500);
-      }
-      drawText(ctx, r.label, rowX + 62, ry + 36, 'rgba(255,255,255,0.76)', TYPE.row, 'left', undefined, 500);
-      const tb = drawToggle(ctx, rowX + rowW - 70, ry + 21, state[r.key]);
-      this._addScrollTouchable(tb.x - 8, ry + 14, tb.w + 16, 44, r.handler);
-    });
-
-    y += settingH + moduleGap;
     const actionRows = [
-      { label: '联系客服', icon: '☏', iconImg: PROFILE_IMG.actionKefu,   handler: 'contactService' },
-      { label: '用户协议', icon: '▤', iconImg: PROFILE_IMG.actionXieyi,  handler: 'openAgreement' },
-      { label: '隐私政策', icon: '▧', iconImg: PROFILE_IMG.actionYinsi,  handler: 'openPrivacy' },
-      { label: '退出登录', icon: '⇱', iconImg: PROFILE_IMG.actionTuichu, handler: 'openExitConfirm', danger: true }
+      { label: '订单记录', icon: '🧾', iconImg: PROFILE_IMG.actionOrder,   handler: 'openOrders' },
+      { label: '设置',     icon: '⚙', iconImg: PROFILE_IMG.actionSetting, handler: 'openSettings' },
+      { label: '建议与反馈', icon: '✎', iconImg: PROFILE_IMG.actionKefu,   handler: 'openFeedback' },
+      { label: '用户协议',  icon: '▤', iconImg: PROFILE_IMG.actionXieyi,   handler: 'openAgreement' },
+      { label: '隐私政策',  icon: '▧', iconImg: PROFILE_IMG.actionYinsi,   handler: 'openPrivacy' }
     ];
     const actionRowH = 54;
     const actionCardH = actionRows.length * actionRowH;
@@ -446,18 +430,35 @@ module.exports = {
         ctx.fillStyle = 'rgba(255,255,255,0.06)';
         ctx.fillRect(rowX + 14, ry, rowW - 28, 1);
       }
-      _drawActionRow(ctx, rowX, ry, rowW, actionRowH, r.icon, r.label, !!r.danger, r.iconImg);
+      _drawActionRow(ctx, rowX, ry, rowW, actionRowH, r.icon, r.label, false, r.iconImg);
       this._addScrollTouchable(rowX, ry, rowW, actionRowH, r.handler);
     });
 
+    const logoutGap = 24;
+    const logoutRowH = 44;
+    const accountActionGap = 8;
+    const logoutY = y + actionCardH + logoutGap;
+    drawText(ctx, '退出登录', W / 2, logoutY + logoutRowH / 2, UI.danger, TYPE.row, 'center', undefined, 600);
+    this._addScrollTouchable(rowX, logoutY, rowW, logoutRowH, 'openExitConfirm');
+
+    const deleteY = logoutY + logoutRowH + accountActionGap;
+    drawText(ctx, '注销账号', W / 2, deleteY + logoutRowH / 2, 'rgba(255,255,255,0.38)', TYPE.row, 'center', undefined, 500);
+    this._addScrollTouchable(rowX, deleteY, rowW, logoutRowH, 'openDeleteAccountConfirm');
+
     endScrollView(ctx);
 
-    if (state.showRecordsModal || state.showExitConfirm || state.showAbout) {
+    if (state.showRecordsModal || state.showExitConfirm || state.showDeleteAccountConfirm || state.showAbout || state.showFeedbackModal) {
       drawModalBackground(ctx, W, H);
     }
     if (state.showRecordsModal) this._drawRecordsModal(ctx, W, H);
+    settingsModal.drawSettingsModal(ctx, this, W, H);
     if (state.showExitConfirm) this._drawExitModal(ctx, W, H);
+    if (state.showDeleteAccountConfirm) this._drawDeleteAccountModal(ctx, W, H);
     if (state.showAbout) this._drawInfoModal(ctx, W, H);
+    if (state.showFeedbackModal) this._drawFeedbackModal(ctx, W, H);
+    if (legalModal.isLegalModalOpen()) {
+      legalModal.drawLegalModal(ctx, scene, W, H, { borderColor: UI.stroke, closeHandler: 'closeLegalModal' });
+    }
   },
 
   _drawRecordsModal(ctx, W, H) {
@@ -482,7 +483,10 @@ module.exports = {
     drawText(ctx, '通关记录', mx + 54, my + 52, UI.text, TYPE.modalTitle, 'left', undefined, 700);
     _drawGlowCard(ctx, mx + mw - 88, my + 38, 66, 28, 14, 'rgba(255,80,200,0.30)', 'rgba(255,80,200,0.14)');
     drawText(ctx, '共 ' + state.records.length + ' 次', mx + mw - 55, my + 52, UI.neon, 11, 'center', undefined, 700);
-    drawText(ctx, '四关全部通过计为 1 次；卡片展示通关时间与用时', mx + 24, my + 82, UI.muted, TYPE.modalSmall, 'left', undefined, 400);
+    drawWrappedText(
+      ctx, '四关全部通过计为 1 次；卡片展示通关时间与用时',
+      mx + 24, my + 82, mw - 48, 18, UI.muted, TYPE.modalSmall, 400
+    );
 
     const list = state.records.slice(0, 12);
     let y = my + 108;
@@ -551,6 +555,43 @@ module.exports = {
     this.manager.addTouchable(0, 0, W, H, 'closeTopModal');
   },
 
+  _drawDeleteAccountModal(ctx, W, H) {
+    const mw = W - 92;
+    const mh = 288;
+    const mx = 46;
+    const my = _modalTop(H, mh);
+    _drawProfileModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,80,0.22)', 24);
+    drawText(ctx, '确认注销账号？', W / 2, my + 52, UI.text, TYPE.modalTitle, 'center', undefined, 800);
+    drawWrappedText(
+      ctx,
+      '注销后将永久删除云端游戏数据（个人资料、图鉴库存、战队、礼物、订单与反馈等），本地数据同时清空，且无法恢复。',
+      mx + 28, my + 82, mw - 56, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400
+    );
+    drawWrappedText(
+      ctx,
+      state.deleteAccountSubmitting ? '正在删除云端数据…' : '若你为队长，所属战队将自动解散。',
+      mx + 28, my + 168, mw - 56, 18, UI.muted, TYPE.modalSmall, 400
+    );
+    const btnW = (mw - 58) / 2;
+    const by = my + mh - 62;
+    const disabled = state.deleteAccountSubmitting;
+    const cancel = drawButtonGradient(
+      ctx, mx + 22, by, btnW, 42, '再想想',
+      disabled ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)',
+      disabled ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.55)',
+      TYPE.button, 14, undefined, 600
+    );
+    const okBtn = drawButtonGradient(
+      ctx, mx + 36 + btnW, by, btnW, 42, disabled ? '处理中…' : '确认注销',
+      disabled ? 'rgba(255,80,80,0.35)' : 'rgba(255,80,80,0.78)', '#fff',
+      TYPE.button, 14, undefined, 700
+    );
+    if (!disabled) {
+      this.manager.addTouchable(cancel.x, cancel.y, cancel.w, cancel.h, 'cancelDeleteAccount');
+      this.manager.addTouchable(okBtn.x, okBtn.y, okBtn.w, okBtn.h, 'confirmDeleteAccount');
+    }
+  },
+
   _drawExitModal(ctx, W, H) {
     const mw = W - 92;
     const mh = 248;
@@ -591,9 +632,308 @@ module.exports = {
 
   closeTopModal() {
     state.showRecordsModal = false;
+    settingsModal.closeSettingsModal();
     state.showExitConfirm = false;
+    state.showDeleteAccountConfirm = false;
     state.showAbout = false;
+    this.closeFeedbackModal();
   },
+
+  _resetFeedbackForm() {
+    state.feedbackTitle = '';
+    state.feedbackContent = '';
+    state.feedbackPhone = '';
+    state.feedbackImagePath = '';
+    state.feedbackSubmitting = false;
+    state.feedbackTitleError = '';
+    state.feedbackContentError = '';
+    state.feedbackPhoneError = '';
+    state.feedbackEditingField = null;
+  },
+
+  _initFeedbackKeyboardListeners() {
+    if (this._feedbackKeyboardInited) return;
+    this._feedbackKeyboardInited = true;
+    if (typeof wx === 'undefined') return;
+    wx.onKeyboardInput && wx.onKeyboardInput((res) => {
+      if (state.feedbackEditingField === 'title') {
+        state.feedbackTitle = res.value;
+        state.feedbackTitleError = '';
+      } else if (state.feedbackEditingField === 'content') {
+        state.feedbackContent = res.value;
+        state.feedbackContentError = '';
+      } else if (state.feedbackEditingField === 'phone') {
+        state.feedbackPhone = sanitizeMobilePhone(res.value);
+        state.feedbackPhoneError = '';
+      }
+    });
+    wx.onKeyboardConfirm && wx.onKeyboardConfirm((res) => {
+      if (state.feedbackEditingField === 'title') {
+        state.feedbackTitle = (res.value || '').trim();
+        state.feedbackTitleError = '';
+      } else if (state.feedbackEditingField === 'content') {
+        state.feedbackContent = (res.value || '').trim();
+        state.feedbackContentError = '';
+      } else if (state.feedbackEditingField === 'phone') {
+        state.feedbackPhone = sanitizeMobilePhone(res.value);
+        state.feedbackPhoneError = '';
+      }
+      state.feedbackEditingField = null;
+      wx.hideKeyboard && wx.hideKeyboard();
+    });
+    wx.onKeyboardComplete && wx.onKeyboardComplete(() => {
+      state.feedbackEditingField = null;
+    });
+  },
+
+  _measureFeedbackModalH() {
+    const titleErrH = state.feedbackTitleError ? 22 : 0;
+    const contentErrH = state.feedbackContentError ? 22 : 0;
+    const phoneErrH = state.feedbackPhoneError ? 22 : 0;
+    const PAD = 22;
+    return PAD + 20 + 14
+      + (12 + 8 + 40 + titleErrH) + 14
+      + (12 + 8 + 64 + contentErrH) + 14
+      + (12 + 8 + 40 + phoneErrH) + 14
+      + (12 + 8 + 72) + 14
+      + 42 + PAD;
+  },
+
+  _drawFeedbackModal(ctx, W, H) {
+    const scene = this;
+    const PAD = 22;
+    const mw = W - 56;
+    const mx = 28;
+    const mh = this._measureFeedbackModalH();
+    const my = centerModalY(H, mh, { minTop: 48, bottomInset: 24 });
+    _drawProfileModalBg(ctx, mx, my, mw, mh, UI.stroke, 22);
+    drawText(ctx, '✕', mx + mw - 24, my + 24, UI.muted, 14, 'center');
+    scene.manager.addTouchable(mx + mw - 44, my + 4, 44, 44, 'closeFeedbackModal');
+    drawText(ctx, '建议与反馈', W / 2, my + PAD + 10, UI.text, TYPE.modalTitle, 'center', undefined, 700);
+
+    const fieldX = mx + PAD;
+    const fieldW = mw - PAD * 2;
+    let y = my + PAD + 20 + 14;
+    const rTitle = drawFormField(ctx, {
+      x: fieldX,
+      y,
+      w: fieldW,
+      label: '标题',
+      value: state.feedbackTitle,
+      placeholder: '简要描述问题或建议',
+      error: state.feedbackTitleError,
+      active: state.feedbackEditingField === 'title'
+    });
+    scene.manager.addTouchable(rTitle.inputRect.x, rTitle.inputRect.y, rTitle.inputRect.w, rTitle.inputRect.h, 'editFeedbackTitle');
+
+    const rContent = drawFormField(ctx, {
+      x: fieldX,
+      y: rTitle.bottom + 14,
+      w: fieldW,
+      label: '内容',
+      value: state.feedbackContent,
+      placeholder: '请详细说明，便于我们跟进处理',
+      multiline: true,
+      maxLines: 3,
+      error: state.feedbackContentError,
+      active: state.feedbackEditingField === 'content'
+    });
+    scene.manager.addTouchable(rContent.inputRect.x, rContent.inputRect.y, rContent.inputRect.w, rContent.inputRect.h, 'editFeedbackContent');
+
+    const rPhone = drawFormField(ctx, {
+      x: fieldX,
+      y: rContent.bottom + 14,
+      w: fieldW,
+      label: '联系方式',
+      value: state.feedbackPhone,
+      placeholder: '请输入手机号',
+      error: state.feedbackPhoneError,
+      active: state.feedbackEditingField === 'phone'
+    });
+    scene.manager.addTouchable(rPhone.inputRect.x, rPhone.inputRect.y, rPhone.inputRect.w, rPhone.inputRect.h, 'editFeedbackPhone');
+
+    const imgLabelY = rPhone.bottom + 14;
+    drawText(ctx, '配图（选填）', fieldX, imgLabelY + 6, UI.muted, 12, 'left', undefined, 400);
+    const imgBoxY = imgLabelY + 12 + 8;
+    const imgBoxH = 72;
+    ctx.save();
+    roundRect(ctx, fieldX, imgBoxY, fieldW, imgBoxH, 12);
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    if (state.feedbackImagePath) {
+      const thumb = 56;
+      const thumbX = fieldX + 10;
+      const thumbY = imgBoxY + (imgBoxH - thumb) / 2;
+      try { loadImages([state.feedbackImagePath], () => {}); } catch (_) {}
+      const img = getImage(state.feedbackImagePath);
+      if (img) {
+        ctx.save();
+        roundRect(ctx, thumbX, thumbY, thumb, thumb, 10);
+        ctx.clip();
+        drawImage(ctx, state.feedbackImagePath, thumbX, thumbY, thumb, thumb);
+        ctx.restore();
+      } else {
+        drawText(ctx, '🖼', thumbX + thumb / 2, thumbY + thumb / 2, UI.muted, 22, 'center', undefined, 400);
+      }
+      drawText(ctx, '已添加 1 张配图', fieldX + 78, imgBoxY + imgBoxH / 2 - 8, 'rgba(255,255,255,0.72)', 13, 'left', undefined, 500);
+      const rm = drawButtonGradient(ctx, fieldX + fieldW - 68, imgBoxY + 20, 56, 32, '移除', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.72)', 12, 10, undefined, 600);
+      scene.manager.addTouchable(rm.x, rm.y, rm.w, rm.h, 'removeFeedbackImage');
+    } else {
+      drawText(ctx, '＋ 添加配图', W / 2, imgBoxY + imgBoxH / 2, 'rgba(255,255,255,0.45)', 14, 'center', undefined, 500);
+      scene.manager.addTouchable(fieldX, imgBoxY, fieldW, imgBoxH, 'chooseFeedbackImage');
+    }
+
+    const btnY = my + mh - PAD - 42;
+    const btnW = (fieldW - 12) / 2;
+    const cancel = drawButtonGradient(ctx, fieldX, btnY, btnW, 42, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.72)', TYPE.button, 12, undefined, 600);
+    const submitLabel = state.feedbackSubmitting ? '提交中…' : '提交';
+    const submit = drawButtonGradient(ctx, fieldX + btnW + 12, btnY, btnW, 42, submitLabel, gradientPink, '#fff', TYPE.button, 12, undefined, 700);
+    if (!state.feedbackSubmitting) {
+      scene.manager.addTouchable(cancel.x, cancel.y, cancel.w, cancel.h, 'closeFeedbackModal');
+      scene.manager.addTouchable(submit.x, submit.y, submit.w, submit.h, 'submitFeedbackForm');
+    }
+  },
+
+  openFeedback() {
+    if (!isUserLoggedIn()) {
+      showToast('请先登录后再提交反馈');
+      return;
+    }
+    this._initFeedbackKeyboardListeners();
+    this._resetFeedbackForm();
+    state.showFeedbackModal = true;
+  },
+
+  closeFeedbackModal() {
+    if (!state.showFeedbackModal) return;
+    state.showFeedbackModal = false;
+    state.feedbackEditingField = null;
+    if (typeof wx !== 'undefined' && wx.hideKeyboard) wx.hideKeyboard();
+  },
+
+  editFeedbackTitle() {
+    if (state.feedbackSubmitting) return;
+    this._initFeedbackKeyboardListeners();
+    state.feedbackEditingField = 'title';
+    if (typeof wx !== 'undefined' && wx.showKeyboard) {
+      wx.showKeyboard({
+        defaultValue: state.feedbackTitle || '',
+        maxLength: 30,
+        multiple: false,
+        confirmHold: false,
+        confirmType: 'next'
+      });
+    }
+  },
+
+  editFeedbackContent() {
+    if (state.feedbackSubmitting) return;
+    this._initFeedbackKeyboardListeners();
+    state.feedbackEditingField = 'content';
+    if (typeof wx !== 'undefined' && wx.showKeyboard) {
+      wx.showKeyboard({
+        defaultValue: state.feedbackContent || '',
+        maxLength: 500,
+        multiple: true,
+        confirmHold: true,
+        confirmType: 'next'
+      });
+    }
+  },
+
+  editFeedbackPhone() {
+    if (state.feedbackSubmitting) return;
+    this._initFeedbackKeyboardListeners();
+    state.feedbackEditingField = 'phone';
+    if (typeof wx !== 'undefined' && wx.showKeyboard) {
+      wx.showKeyboard({
+        defaultValue: state.feedbackPhone || '',
+        maxLength: 11,
+        multiple: false,
+        confirmHold: false,
+        confirmType: 'done'
+      });
+    }
+  },
+
+  chooseFeedbackImage() {
+    if (state.feedbackSubmitting) return;
+    pickFeedbackImage()
+      .then((path) => {
+        state.feedbackImagePath = path;
+        try { loadImages([path], () => {}); } catch (_) {}
+      })
+      .catch((err) => {
+        if (err && err.errMsg && String(err.errMsg).indexOf('cancel') >= 0) return;
+        showToast((err && err.message) || '选图失败');
+      });
+  },
+
+  removeFeedbackImage() {
+    if (state.feedbackSubmitting) return;
+    state.feedbackImagePath = '';
+  },
+
+  submitFeedbackForm() {
+    if (state.feedbackSubmitting) return;
+    const title = (state.feedbackTitle || '').trim();
+    const content = (state.feedbackContent || '').trim();
+    const phoneResult = validateMobilePhone(state.feedbackPhone);
+    state.feedbackTitleError = '';
+    state.feedbackContentError = '';
+    state.feedbackPhoneError = '';
+    let ok = true;
+    if (!title) {
+      state.feedbackTitleError = '请填写标题';
+      ok = false;
+    } else if (title.length > 30) {
+      state.feedbackTitleError = '标题不超过 30 字';
+      ok = false;
+    }
+    if (!content) {
+      state.feedbackContentError = '请填写内容';
+      ok = false;
+    } else if (content.length > 500) {
+      state.feedbackContentError = '内容不超过 500 字';
+      ok = false;
+    }
+    if (!phoneResult.ok) {
+      state.feedbackPhoneError = phoneResult.reason;
+      ok = false;
+    }
+    if (!ok) return;
+
+    const scene = this;
+    state.feedbackSubmitting = true;
+    state.feedbackEditingField = null;
+    if (typeof wx !== 'undefined' && wx.hideKeyboard) wx.hideKeyboard();
+    showToast('提交中…');
+    submitFeedbackWithImage({
+      title,
+      content,
+      phone: phoneResult.phone,
+      imagePath: state.feedbackImagePath
+    })
+      .then(() => {
+        showToast('提交成功，感谢反馈');
+        scene.closeFeedbackModal();
+        scene._resetFeedbackForm();
+      })
+      .catch((err) => {
+        showToast((err && err.message) || '提交失败');
+      })
+      .finally(() => {
+        state.feedbackSubmitting = false;
+      });
+  },
+
   openRecords() {
     state.showRecordsModal = true;
     this._refresh();
@@ -604,36 +944,101 @@ module.exports = {
     state.showExitConfirm = false;
     // 退出登录：仅清掉本机的登录态与个人资料；其它本地数据（图鉴、设置、战队等）保留。
     store.updateUser({ isLoggedIn: false, nickName: '玩家', avatar: '' });
-    // 让 home 场景再次进入时重新弹出授权登录弹窗
-    const homeScene = this.manager.scenes && this.manager.scenes.home;
-    if (homeScene) homeScene._authPromptDone = false;
     showToast('已退出登录');
-    this.manager.switchTo('home');
+    this.manager.switchTo('home', { requireLogin: true });
   },
-  editProfile() { showToast('资料编辑暂未开放'); },
-  toggleSound() {
-    state.soundOn = !state.soundOn;
-    store.updateSettings({ soundOn: state.soundOn });
+  openDeleteAccountConfirm() {
+    if (!isUserLoggedIn()) {
+      showToast('请先登录后再注销账号');
+      return;
+    }
+    state.showDeleteAccountConfirm = true;
   },
-  toggleVibration() {
-    state.vibrationOn = !state.vibrationOn;
-    store.updateSettings({ vibrationOn: state.vibrationOn });
+  cancelDeleteAccount() {
+    if (state.deleteAccountSubmitting) return;
+    state.showDeleteAccountConfirm = false;
   },
-  contactService() { showToast('客服功能暂未开放'); },
+  confirmDeleteAccount() {
+    if (state.deleteAccountSubmitting) return;
+    const scene = this;
+    state.deleteAccountSubmitting = true;
+    showToast('正在注销…');
+    deleteUserAccountCloud().then((result) => {
+      state.deleteAccountSubmitting = false;
+      if (!result.success) {
+        showToast(result.msg || '注销失败，请稍后重试');
+        return;
+      }
+      state.showDeleteAccountConfirm = false;
+      showToast('账号已注销');
+      scene._exitAfterAccountDeletion();
+    });
+  },
+  _exitAfterAccountDeletion() {
+    if (typeof wx !== 'undefined' && typeof wx.exitMiniProgram === 'function') {
+      try {
+        wx.exitMiniProgram({
+          fail: () => {
+            showToast('数据已清空，请从胶囊关闭小游戏');
+            this.manager.switchTo('home', { requireLogin: true });
+          }
+        });
+      } catch (e) {
+        this.manager.switchTo('home', { requireLogin: true });
+      }
+    } else {
+      this.manager.switchTo('home', { requireLogin: true });
+    }
+  },
+  openOrders() {
+    if (!isUserLoggedIn()) {
+      showToast('请先登录后查看订单');
+      return;
+    }
+    this.manager.switchTo('order-list');
+  },
+  openSettings() { settingsModal.openSettingsModal(); },
   openAgreement() {
-    state.aboutTitle = '用户协议';
-    state.aboutText = '请遵守游戏规则，公平挑战，不使用外挂或异常方式刷取通关、排行与奖励数据。';
-    state.showAbout = true;
+    legalModal.openLegalDocument('用户协议', getUserAgreementText());
   },
   openPrivacy() {
-    state.aboutTitle = '隐私政策';
-    state.aboutText = '游戏仅在本地保存昵称、设置、通关记录和气球资产等必要数据，用于恢复进度和展示个人信息。';
-    state.showAbout = true;
+    legalModal.openPrivacyPolicy();
   },
+  closeLegalModal() {
+    legalModal.closeLegalModal();
+  },
+  _legalModalAbsorb() { /* 阻断穿透 */ },
+
+  handleBackButton() {
+    if (state.showFeedbackModal) {
+      this.closeFeedbackModal();
+      return true;
+    }
+    if (state.showDeleteAccountConfirm) {
+      if (!state.deleteAccountSubmitting) state.showDeleteAccountConfirm = false;
+      return true;
+    }
+    if (state.showExitConfirm) {
+      state.showExitConfirm = false;
+      return true;
+    }
+    if (settingsModal.isSettingsModalOpen()) {
+      settingsModal.closeSettingsModal();
+      return true;
+    }
+    if (state.showRecordsModal || state.showAbout) {
+      this.closeTopModal();
+      return true;
+    }
+    return false;
+  },
+
   goBack() { this.manager.switchTo('home'); },
 
   onTouch(type, x, y) {
-    if (state.showRecordsModal || state.showExitConfirm || state.showAbout) return false;
+    if (legalModal.handleLegalModalTouch(type, x, y)) return true;
+    if (legalModal.isLegalModalOpen()) return false;
+    if (state.showRecordsModal || settingsModal.isSettingsModalOpen() || state.showExitConfirm || state.showDeleteAccountConfirm || state.showAbout || state.showFeedbackModal) return false;
     const top = state._scrollTop;
     const bottom = state._scrollBottom;
     if (type === 'start' || type === 'begin') {

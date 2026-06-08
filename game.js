@@ -47,7 +47,7 @@ try {
 } catch (_) { /* ignore */ }
 
 // 全局音频：iOS 静音键、首次触摸激活
-const { applyInnerAudioOption } = require('./js/audio');
+const { applyInnerAudioOption, syncBgmFromSettings, pauseBgm, resumeBgm } = require('./js/audio');
 applyInnerAudioOption();
 
 let _audioTouchUnlocked = false;
@@ -69,6 +69,7 @@ const scenes = {
   'team-detail': require('./js/scenes/team-detail'),
   'team-rank': require('./js/scenes/team-rank'),
   profile: require('./js/scenes/profile'),
+  'order-list': require('./js/scenes/order-list'),
   'cloud-test': require('./js/scenes/cloud-test')
 };
 
@@ -113,6 +114,11 @@ function _readLaunchQuery() {
     manager.switchTo('collection', { activeTab: 'legend' });
     return;
   }
+  // 微信后台「订单中心」path 配置为 scene=orders，满足虚拟支付合规的订单查询入口
+  if (q.scene === 'orders' || q.scene === 'orderList') {
+    _whenLoggedIn(() => manager.switchTo('order-list'));
+    return;
+  }
   if (q.cloudTest === '1' || q.scene === 'cloudTest') {
     manager.switchTo('cloud-test');
     return;
@@ -135,6 +141,7 @@ wx.onTouchStart(e => {
   if (!_audioTouchUnlocked) {
     _audioTouchUnlocked = true;
     applyInnerAudioOption();
+    syncBgmFromSettings();
   }
   const t = e.touches[0];
   if (!t) return;
@@ -229,19 +236,34 @@ setTimeout(function () {
 wx.onShow(() => {
   store.checkDailyReset();
   store.expireGifts();
-  if (manager.currentScene && manager.currentScene.onShow) {
-    manager.currentScene.onShow();
+  resumeBgm();
+  // 前台恢复（如分享/拉起后返回）：优先用 onResume，避免把 onShow 当成"重新进入场景"而重置进度/弹窗
+  const s = manager.currentScene;
+  if (s) {
+    if (typeof s.onResume === 'function') s.onResume();
+    else if (typeof s.onShow === 'function') s.onShow();
   }
 });
 
 wx.onHide(() => {
+  pauseBgm();
   if (manager.currentScene && manager.currentScene.onHide) {
     manager.currentScene.onHide();
   }
 });
 
+if (typeof wx !== 'undefined' && wx.onBackButtonClick) {
+  wx.onBackButtonClick(() => {
+    manager.handleBackButton();
+  });
+}
+
 // 音频中断恢复
-wx.onAudioInterruptionEnd ? wx.onAudioInterruptionEnd(() => {}) : null;
+if (wx.onAudioInterruptionEnd) {
+  wx.onAudioInterruptionEnd(() => {
+    resumeBgm();
+  });
+}
 
 // 窗口大小变化
 wx.onWindowResize && wx.onWindowResize(res => {

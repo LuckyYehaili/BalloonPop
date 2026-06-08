@@ -3,6 +3,7 @@
 
 const UX = require('../ui-theme');
 const NumFont = require('../fonts/numeric-font');
+const { isDevelopEnv } = require('../platform');
 
 let _cr = null; // current scene's touch handler
 
@@ -81,6 +82,39 @@ function drawText(ctx, text, x, y, color, fontSize, align, shadowColor, fontWeig
   drawMixedLine(ctx, text, x, y, color, fontSize, align || 'left', shadowColor, w, 'middle');
 }
 
+/** 按字形视觉边界框居中绘制 emoji（解决 textAlign:center + middle 偏移问题） */
+function drawEmojiCentered(ctx, emoji, cx, cy, color, fontSize, shadowColor, fontWeight) {
+  const s = emoji == null ? '' : String(emoji);
+  if (!s) return;
+  const w = fontWeight !== undefined && fontWeight !== null ? fontWeight : 500;
+  ctx.save();
+  ctx.font = _font(fontSize, w);
+  ctx.fillStyle = color || '#ffffff';
+  if (shadowColor) {
+    ctx.shadowColor = shadowColor;
+    ctx.shadowBlur = 10;
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const m = ctx.measureText(s);
+  const left = m.actualBoundingBoxLeft || 0;
+  const right = m.actualBoundingBoxRight || m.width || 0;
+  const ascent = m.actualBoundingBoxAscent != null ? m.actualBoundingBoxAscent : m.fontBoundingBoxAscent;
+  const descent = m.actualBoundingBoxDescent != null ? m.actualBoundingBoxDescent : m.fontBoundingBoxDescent;
+  if (ascent != null && descent != null && right > 0) {
+    const x = cx - (right - left) / 2;
+    const y = cy + (ascent - descent) / 2;
+    ctx.fillText(s, x, y);
+  } else if (m.width > 0) {
+    ctx.fillText(s, cx - m.width / 2, cy + fontSize * 0.35);
+  } else {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s, cx, cy);
+  }
+  ctx.restore();
+}
+
 /** 按最大宽度拆行（用于 Toast 等，不绘制） */
 function wrapTextLines(ctx, text, maxWidth, fontSize) {
   const lines = [];
@@ -114,6 +148,24 @@ function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color, fontSize,
   }
   if (line) drawMixedLine(ctx, line, x, ly, color, fontSize, 'left', undefined, w, 'top');
   return ly + lineHeight - y;
+}
+
+/** 按 maxWidth 估算换行后的文本块高度（不绘制） */
+function measureWrappedTextHeight(ctx, text, maxWidth, lineHeight, fontSize, fontWeight) {
+  const w = fontWeight !== undefined && fontWeight !== null ? fontWeight : 550;
+  let line = '';
+  let lines = 0;
+  for (const ch of String(text || '')) {
+    const test = line + ch;
+    if (measureText(ctx, test, fontSize, w) > maxWidth && line.length > 0) {
+      lines++;
+      line = ch;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines++;
+  return Math.max(lineHeight, lines * lineHeight);
 }
 
 // ─── Rounded Rect ───────────────────────────
@@ -452,7 +504,9 @@ function handleTouchTap(touchables, x, y, scene) {
       continue;
     }
     if (x >= t.x && x <= t.x+t.w && y >= t.y && y <= t.y+t.h) {
-      console.log('[handleTouchTap] 命中触区: handler=' + (typeof t.handler === 'string' ? t.handler : 'function') + ' area=' + JSON.stringify({x:t.x,y:t.y,w:t.w,h:t.h}));
+      if (isDevelopEnv()) {
+        console.log('[handleTouchTap] 命中触区: handler=' + (typeof t.handler === 'string' ? t.handler : 'function') + ' area=' + JSON.stringify({x:t.x,y:t.y,w:t.w,h:t.h}));
+      }
       if (typeof t.handler === 'function') {
         try {
           t.handler(scene);
@@ -476,7 +530,7 @@ function handleTouchTap(touchables, x, y, scene) {
 // ─── Exports ───────────────────────────────
 module.exports = {
   setTouchHandler,
-  measureText, drawText, drawWrappedText,
+  measureText, drawText, drawEmojiCentered, drawWrappedText, measureWrappedTextHeight,
   loadNumericFont: NumFont.loadNumericFont,
   setNumericFontSourceUrl: NumFont.setNumericFontSourceUrl,
   getNumericFontFaceFamily: NumFont.getNumericFontFaceFamily,

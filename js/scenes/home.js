@@ -9,6 +9,11 @@ const cloudTeam = require('../cloud-team');
 const { BALLOON_TYPES } = require('../balloons');
 const UX = require('../ui-theme');
 const { getCapsuleLayout } = require('../layout-safe');
+const legalModal = require('../engine/legal-modal');
+const settingsModal = require('../engine/settings-modal');
+const { getUserAgreementText } = require('../legal-documents');
+const { computeHomeStatsDisplay, getRealHomeStatsFromStore } = require('../home-stats-display');
+const { isUserLoggedIn } = require('../auth-guard');
 
 // 首页用到的 PNG 图标统一登记，方便 onShow 预加载与渲染时索引
 const UI_IMG = {
@@ -18,7 +23,8 @@ const UI_IMG = {
   collection: 'images/ui/collection.png',   // 底栏-气球图鉴
   profile: 'images/ui/profile.png',         // 底栏-我的
   teamEmpty: 'images/ui/teamempty.png',     // 未入队主卡-中上方占位图
-  popLogo: 'images/ui/POP-logo.png'         // 顶部 Hero 主视觉 LOGO
+  popLogo: 'images/ui/POP-logo.png',        // 顶部 Hero 主视觉 LOGO
+  setting: 'images/ui/setting.png'          // 左上角-设置入口
 };
 let _uiImgLoaded = false;                   // 是否已触发过一次预加载（onShow 内根据缓存命中再校验）
 
@@ -35,7 +41,8 @@ let state = {
   bouquetSharePosterPath: '',                                               // 与分享卡片一致的海报临时图
   bouquetSharePosterLoading: false,
   loginOverlayFromBouquet: false,
-  showNotification: false, scrollY: 0, contentHeight: 0                    // 通知弹窗 + 滚动相关
+  showNotification: false, scrollY: 0, contentHeight: 0,                    // 通知弹窗 + 滚动相关
+  displayTeamCount: 1, displayUserCount: 1                                  // 首页统计卡展示值（进入时计算一次）
 };
 
 // 统一主题 + 赛博霓虹首页（参考战队页视觉）
@@ -236,7 +243,7 @@ function _homeLogicalBodyHeight(hasTeam) {
   const heroR = 24;
   y += heroR + heroR + 48;        // Hero：圆圈直径 + 圈到标题 48px
   y += 30 + 16 + 26;              // 标题 + 两行说明 + 留白
-  y += 26 + 44 + 36;              // 装饰气球区
+  y += 26 + 44 + 20;              // 装饰气球区（卡片区上移 16px）
   y += 66 + 10;                   // 双列统计卡
   y += 46 + 12;                   // 实时排名轮播
   y += (hasTeam ? 280 : 264) + 12;// 主卡（有/无战队两种高度；无战队已去掉三栏小卡）
@@ -277,7 +284,6 @@ module.exports = {
       state.bouquetSharePosterPath = '';
       state.bouquetSharePosterLoading = true;
       state.showLoginModal = false;
-      this._authPromptDone = true;
       const { createBouquetPosterFile } = require('../bouquet-share');
       const payload = d.bouquetShare;
       createBouquetPosterFile({
@@ -301,7 +307,10 @@ module.exports = {
       state.bouquetSharePosterLoading = false;
       state.loginOverlayFromBouquet = false;
     }
-    cloudTeam.syncTeamFromCloud().finally(() => this._refresh());
+    const { cloudLogin } = require('../cloud-login');
+    cloudLogin().finally(() => {
+      cloudTeam.syncTeamFromCloud().finally(() => this._refresh());
+    });
   },
   // 把 store 里散乱的数据整理成 render 一次性可用的 state（避免每帧 IO/计算）
   _refresh() {
@@ -334,7 +343,7 @@ module.exports = {
       state.lastLevel = store.getLastPlayedLevel() || 1;
       state.highestLevel = store.getHighestLevel() || 1;
       state.isFirstTime = !!user.isFirstTime;
-      state.isLoggedIn = !!user.isLoggedIn;
+      state.isLoggedIn = isUserLoggedIn(user);
       state.hasTeam = !!team;
       state.teamName = team?team.name:'';
       state.teamMemberCount = team?(team.members?team.members.length:team.memberCount||0):0;
@@ -342,10 +351,12 @@ module.exports = {
       state.topTeams = ranked.slice(0,5);
       state.recentBalloons = ownedList;
 
-      // 未登录 且 本次进程内还没提示过：拉起微信授权登录弹窗
-      // _authPromptDone 在用户登录 / 主动暂不登录后置 true，避免热恢复反复弹；
-      // 退出登录会在 profile 里把它复位为 false，下次进入 home 重新提示。
-      if (!state.isLoggedIn && !this._authPromptDone && !state.showBouquetShareModal) {
+      const homeStats = computeHomeStatsDisplay(getRealHomeStatsFromStore(store));
+      state.displayTeamCount = homeStats.displayTeamCount;
+      state.displayUserCount = homeStats.displayUserCount;
+
+      // 未登录（含 mock_ openid）：强制登录弹窗；花束落地页先展示花束，点「进入游戏」再叠登录
+      if (!state.isLoggedIn && !state.showBouquetShareModal) {
         state.showLoginModal = true;
       }
 
@@ -421,15 +432,12 @@ module.exports = {
     const baseY = y + 26;
     _drawDecorBalloons(ctx, cx, baseY, t);
     y = baseY + 44;
-    // 主视觉与卡片区之间留白：让统计卡、轮播、主卡整体下移
-    y += 36;
+    y += 20;
 
-    // —— 双列全局统计 ——
-    const rankedAll = store.getRankedTeams() || [];                                    // 全部战队排行数据
-    const sumClears = rankedAll.reduce((a, x) => a + (x.periodClears || 0), 0);    // 累加所有战队本周通关数
-    const onlineV = _fmtComma(8800 + sumClears * 4 + state.highestLevel * 90);         // 在线玩家展示值（千分位）
-    const activeV = _fmtComma(Math.max(1, rankedAll.length) * 37 + 1980);              // 活跃战队展示值（千分位）
-    const hw = (W - padding * 2 - 10) / 2;                                             // 单卡宽度：屏宽减去左右 padding 与中间 10px 间隙后平分
+    // —— 双列全局统计（进入首页时计算一次，停留期间固定） ——
+    const onlineV = _fmtComma(state.displayUserCount);
+    const activeV = _fmtComma(state.displayTeamCount);
+    const hw = (W - padding * 2 - 10) / 2;
     const hh = 66;                                                                     // 单卡高度
     const heroStats = [                                                                // 两张统计卡的数据源
       { img: UI_IMG.online, val: onlineV, lab: '在线玩家', col: '#ff50c8', sh: 'rgba(255,80,200,0.45)' },     // 左卡：在线玩家
@@ -739,11 +747,19 @@ module.exports = {
 
     state.contentHeight = topY + y * scaleY + safeB + 10; // 记录内容总高，便于将来做滚动
 
+    // 左上角「设置」入口（与「我的」共用同一设置弹窗）；被其它全屏弹窗遮挡时不绘制
+    if (!state.showBouquetShareModal && !state.showLoginModal && !state.showNotification) {
+      this._drawTopSettingsButton(ctx, scene, W, L);
+    }
+
     // 7. 好友花束分享落地弹窗（进入游戏后叠授权，不关花束层）
     if (state.showBouquetShareModal && state.bouquetShare) {
       this._drawBouquetShareModal(ctx, W, H);
       if (state.showLoginModal && state.loginOverlayFromBouquet) {
         this._drawLoginModal(ctx, W, H);
+      }
+      if (legalModal.isLegalModalOpen()) {
+        legalModal.drawLegalModal(ctx, scene, W, H, { borderColor: UX.strokeViolet, closeHandler: 'closeLegalModal' });
       }
       return;
     }
@@ -751,6 +767,9 @@ module.exports = {
     // 8. 微信授权登录弹窗（非花束叠层场景）
     if (state.showLoginModal) {
       this._drawLoginModal(ctx, W, H);
+      if (legalModal.isLegalModalOpen()) {
+        legalModal.drawLegalModal(ctx, scene, W, H, { borderColor: UX.strokeViolet, closeHandler: 'closeLegalModal' });
+      }
       return;
     }
 
@@ -798,12 +817,41 @@ module.exports = {
       scene.manager.addTouchable(btn2.x, btn2.y, btn2.w, btn2.h, 'onNotificationCancel');
     }
 
+    // 10. 设置弹窗：置于最顶层（点击外部/✕ 关闭）
+    settingsModal.drawSettingsModal(ctx, scene, W, H);
+
+  },
+  // 左上角设置按钮：屏幕坐标系，与右上角胶囊垂直居中对齐
+  _drawTopSettingsButton(ctx, scene, W, L) {
+    const size = Math.max(32, Math.min(40, (L && L.height) || 32));
+    const x = THEME.spacing.base;                       // 左内边距 16
+    const cyY = (L && L.capsuleCenterY) || (size / 2 + 8);
+    const yTop = cyY - size / 2;
+    ctx.save();
+    roundRect(ctx, x, yTop, size, size, size / 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+    const pad = 8;
+    if (getImage(UI_IMG.setting)) {
+      drawImage(ctx, UI_IMG.setting, x + pad, yTop + pad, size - pad * 2, size - pad * 2);
+    } else {
+      drawText(ctx, '⚙', x + size / 2, cyY, '#ffffff', 18, 'center');
+    }
+    scene.manager.addTouchable(x, yTop, size, size, 'openSettings');
   },
   // 触摸：首页本身不消费触摸事件，只交给 SceneManager 的 touchable 命中区
   onTouch(type, x, y) {
+    if (settingsModal.isSettingsModalOpen()) return false; // 弹窗由 touchable 命中处理，禁止穿透
+    if (legalModal.handleLegalModalTouch(type, x, y)) return true;
+    if (legalModal.isLegalModalOpen()) return false;
     if (type !== 'end' && type !== 'tap') return false;
     return false;
   },
+  openSettings() { settingsModal.openSettingsModal(); },
   // ─── Handlers（由 addTouchable 用字符串名调用）──────────────────────────────
   startChallenge() {                           // 主按钮：开始挑战
     const user = store.getUser();
@@ -970,8 +1018,10 @@ module.exports = {
   },
 
   // ─── 微信授权登录弹窗 ────────────────────────────────────
-  // 进程内是否已经处理过（登录成功 / 主动暂不登录）；profile 退出登录时会复位
-  _authPromptDone: false,
+  promptLogin() {
+    if (state.showBouquetShareModal) return;
+    state.showLoginModal = true;
+  },
   _drawLoginModal(ctx, W, H) {
     const scene = this;
     drawModalBackground(ctx, W, H);
@@ -1060,19 +1110,50 @@ module.exports = {
     drawText(ctx, '退出游戏', W / 2, skipY + skipH / 2, 'rgba(255,255,255,0.55)', 13, 'center', undefined, 500);
     scene.manager.addTouchable(W / 2 - 96, skipY, 192, skipH, 'exitMiniProgram');
 
-    // 协议
+    // 协议（《用户协议》《隐私政策》可点击）
     const policyY = skipY + skipH + gap;
-    drawText(ctx, '登录即表示同意《用户协议》和《隐私政策》', W / 2, policyY + policyH / 2, 'rgba(255,255,255,0.32)', 11, 'center', undefined, 400);
+    const policyCy = policyY + policyH / 2;
+    const policyFs = 11;
+    const policyPrefix = '登录即表示同意';
+    const policyMid = '和';
+    const agreementLink = '《用户协议》';
+    const privacyLink = '《隐私政策》';
+    const prefixW = measureText(ctx, policyPrefix, policyFs, 400);
+    const agreementW = measureText(ctx, agreementLink, policyFs, 500);
+    const midW = measureText(ctx, policyMid, policyFs, 400);
+    const privacyW = measureText(ctx, privacyLink, policyFs, 500);
+    const totalW = prefixW + agreementW + midW + privacyW;
+    let lx = W / 2 - totalW / 2;
+    drawText(ctx, policyPrefix, lx, policyCy, 'rgba(255,255,255,0.32)', policyFs, 'left', undefined, 400);
+    lx += prefixW;
+    const agreementX = lx;
+    drawText(ctx, agreementLink, lx, policyCy, 'rgba(125,211,252,0.88)', policyFs, 'left', undefined, 500);
+    scene.manager.addTouchable(agreementX, policyY - 2, agreementW, policyH + 6, 'openAgreement');
+    lx += agreementW;
+    drawText(ctx, policyMid, lx, policyCy, 'rgba(255,255,255,0.32)', policyFs, 'left', undefined, 400);
+    lx += midW;
+    const privacyX = lx;
+    drawText(ctx, privacyLink, lx, policyCy, 'rgba(125,211,252,0.88)', policyFs, 'left', undefined, 500);
+    scene.manager.addTouchable(privacyX, policyY - 2, privacyW, policyH + 6, 'openPrivacy');
   },
   _loginModalAbsorb() { /* 吸收弹窗外的所有点击，阻断穿透 */ },
+  openAgreement() {
+    legalModal.openLegalDocument('用户协议', getUserAgreementText());
+  },
+  openPrivacy() {
+    legalModal.openPrivacyPolicy();
+  },
+  closeLegalModal() {
+    legalModal.closeLegalModal();
+  },
+  _legalModalAbsorb() { /* 阻断穿透 */ },
   loginWithWeChat() {
     const scene = this;
     const fromBouquet = !!state.loginOverlayFromBouquet;
     const { cloudLogin } = require('../cloud-login');
     showToast('登录中…');
-    cloudLogin().then((r) => {
+    cloudLogin({ explicit: true }).then((r) => {
       if (r.ok) {
-        scene._authPromptDone = true;
         state.showLoginModal = false;
         state.loginOverlayFromBouquet = false;
         if (fromBouquet) {
@@ -1083,41 +1164,40 @@ module.exports = {
         }
         scene._refresh();
         showToast('登录成功');
+        const pending = scene.manager.consumePendingNavigation();
+        if (pending) {
+          scene.manager.switchTo(pending.name, pending.data);
+        }
         return;
       }
-      if (fromBouquet) {
-        state.showLoginModal = false;
-        state.loginOverlayFromBouquet = false;
-        showToast('登录失败，请稍后再试');
-        return;
-      }
-      const mockNicks = ['糖果小仙女', '霓虹少年', '气球猎人', '星河旅人', '夜光甜筒', '泡泡先生'];
-      store.updateUser({
-        isLoggedIn: true,
-        nickName: mockNicks[Math.floor(Math.random() * mockNicks.length)],
-        avatar: '',
-        isFirstTime: false
-      });
-      scene._authPromptDone = true;
-      state.showLoginModal = false;
-      scene._refresh();
-      showToast('登录成功（离线）');
+      showToast('登录失败，请检查网络后重试');
     });
   },
-  exitMiniProgram() {                          // 副按钮：退出游戏（关闭小程序）
-    // 微信小游戏 / 小程序：调用 wx.exitMiniProgram 退到对话列表
-    if (typeof wx !== 'undefined' && typeof wx.exitMiniProgram === 'function') {
-      try {
-        wx.exitMiniProgram({
-          fail: () => showToast('请从右上角胶囊「···」选择关闭')
-        });
-      } catch (e) {
-        console.warn('[home.exitMiniProgram] 调用失败:', e && e.message);
-        showToast('请从右上角胶囊「···」选择关闭');
-      }
-    } else {
-      // 开发者工具 / 老基础库兜底：API 不可用时给出明确提示
-      showToast('请从右上角胶囊「···」选择关闭');
+  exitMiniProgram() {                          // 副按钮：退出游戏 → 先二次确认
+    // 不直接关闭，先弹「是否退出游戏」确认（由 SceneManager 统一渲染与处理）
+    this.manager.showExitGameConfirm = true;
+  },
+
+  handleBackButton() {
+    if (settingsModal.isSettingsModalOpen()) {
+      settingsModal.closeSettingsModal();
+      return true;
     }
+    if (state.showNotification) {
+      state.showNotification = false;
+      return true;
+    }
+    if (state.showLoginModal) {
+      this.manager.showExitGameConfirm = true;
+      return true;
+    }
+    if (state.showBouquetShareModal) {
+      state.showBouquetShareModal = false;
+      state.bouquetShare = null;
+      state.bouquetSharePosterPath = '';
+      state.bouquetSharePosterLoading = false;
+      return true;
+    }
+    return false;
   }
 };

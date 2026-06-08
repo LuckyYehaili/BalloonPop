@@ -58,14 +58,14 @@ function _computeBouquetLayout(x, y, w, h, count, layout) {
       const targetY = bCy + slot.ry * H * rySpread;
       const centerMult = i === 9 ? BOUQUET_CENTER_BALLOON_RADIUS_MULT : 1;
       const r = baseR * (slot.s || 0.85) * centerMult;
-      const topPad = i === 9 ? 1.5 : 1.2;
+      const topPad = i === 9 ? 1.65 : 1.2;
       top = Math.min(top, targetY - r * topPad);
       bottom = Math.max(bottom, targetY + r * 0.55);
     }
     const bowSize = W * 0.08;
     bottom = Math.max(bottom, bowY + bowSize * 1.65 + 4);
     let shiftY = (y + H / 2) - (top + bottom) / 2;
-    const margin = 6;
+    const margin = Math.max(8, Math.min(14, H * 0.04));
     if (top + shiftY < y + margin) shiftY = y + margin - top;
     if (bottom + shiftY > y + H - margin) shiftY = y + H - margin - bottom;
     bCy += shiftY;

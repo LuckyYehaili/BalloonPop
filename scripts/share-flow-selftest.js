@@ -41,9 +41,20 @@ global.wx = {
 const { isInviteJoinCached, markInviteJoinSuccess, CACHE_MS } = require(path.join(root, 'js/invite-cache'));
 
 let passed = 0;
+const _asyncTests = [];
 function test(name, fn) {
   try {
-    fn();
+    const ret = fn();
+    if (ret && typeof ret.then === 'function') {
+      _asyncTests.push(ret.then(() => {
+        console.log('  ✓', name);
+        passed++;
+      }).catch((e) => {
+        console.error('  ✗', name, '-', e.message);
+        process.exitCode = 1;
+      }));
+      return;
+    }
     console.log('  ✓', name);
     passed++;
   } catch (e) {
@@ -115,5 +126,57 @@ test('邀请 token 仅成功缓存 5 分钟', () => {
   ok(!isInviteJoinCached('team1', 'tok1'), '过期后失效');
 });
 
-console.log('\n通过', passed, '项\n');
-if (process.exitCode) process.exit(1);
+test('分享图导出：优先 canvas.toTempFilePath', () => {
+  const { _exportCanvasToTempFile } = require(path.join(root, 'js/bouquet-share'));
+  let used = '';
+  global.wx = Object.assign(global.wx || {}, {
+    canvasToTempFilePath(opts) {
+      opts.fail && opts.fail({ errMsg: 'should not reach wx api' });
+    }
+  });
+  const canvas = {
+    toTempFilePath(opts) {
+      used = 'canvas';
+      opts.success && opts.success({ tempFilePath: '/tmp/poster.png' });
+    },
+    toDataURL() { return 'data:image/png;base64,' + 'A'.repeat(80); }
+  };
+  return _exportCanvasToTempFile(canvas, 100, 80).then((p) => {
+    ok(used === 'canvas', '应优先 canvas.toTempFilePath');
+    ok(p === '/tmp/poster.png', '应返回 canvas 路径');
+  });
+});
+
+test('分享图导出：wx API 失败时回退 toDataURL', () => {
+  const { _exportCanvasToTempFile } = require(path.join(root, 'js/bouquet-share'));
+  const written = [];
+  global.wx = Object.assign(global.wx || {}, {
+    env: { USER_DATA_PATH: '/tmp' },
+    getFileSystemManager() {
+      return {
+        writeFile(opts) {
+          written.push(opts.filePath);
+          opts.success && opts.success();
+        }
+      };
+    },
+    canvasToTempFilePath(opts) {
+      opts.fail && opts.fail({ errMsg: 'canvasToTempFilePath:fail invalid viewId' });
+    }
+  });
+  const canvas = {
+    toTempFilePath(opts) {
+      opts.fail && opts.fail({ errMsg: 'canvas.toTempFilePath:fail' });
+    },
+    toDataURL() { return 'data:image/png;base64,' + 'A'.repeat(80); }
+  };
+  return _exportCanvasToTempFile(canvas, 100, 80).then((p) => {
+    ok(p && p.indexOf('bouquet_share_') > -1, '应写入本地 png');
+    ok(written.length === 1, 'writeFile 被调用');
+  });
+});
+
+Promise.all(_asyncTests).then(() => {
+  console.log('\n通过', passed, '项\n');
+  if (process.exitCode) process.exit(1);
+});

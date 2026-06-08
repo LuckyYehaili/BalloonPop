@@ -5,10 +5,16 @@ const {
 } = require('../engine/canvas-ui');
 const { drawPageHeader } = require('../engine/page-header');
 const store = require('../store');
-const { purchaseLegendBalloon } = require('../cloud-pay');
+const { isUserLoggedIn } = require('../auth-guard');
+const {
+  toastIfLegendPurchaseBlocked,
+  getLegendPurchaseConfirmCopy,
+  runLegendPurchase,
+  LEGEND_PRICE_YUAN_DEFAULT
+} = require('../legend-purchase');
 const { BALLOON_TYPES, LEVELS } = require('../balloons');
 const UX = require('../ui-theme');
-const { getCapsuleLayout } = require('../layout-safe');
+const { getCapsuleLayout, centerModalY } = require('../layout-safe');
 const { drawBouquetStillFrame, drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 const { shareBouquetAsImage, balloonsFromBouquetRecord } = require('../bouquet-share');
 const { syncBalloonInventoryFromCloud, cloudLogin } = require('../cloud-login');
@@ -347,7 +353,10 @@ function _isVisibleHit(y, h) {
 }
 
 function _modalTop(H, mh) {
-  return Math.max(36, Math.round((H - mh) / 2));
+  return centerModalY(H, mh, {
+    padTop: 36,
+    padBottom: Math.max(16, (getCapsuleLayout().safeBottomInset || 0) + 12)
+  });
 }
 
 function _shareAppMessage(title, query, fallbackText) {
@@ -416,7 +425,7 @@ const sceneApi = {
       state.showGiftReceiveModal = false;
       const scene = this;
       cloudLogin().finally(() => {
-        const loggedIn = !!(store.getUser() && store.getUser().isLoggedIn);
+        const loggedIn = isUserLoggedIn();
         if (state.incomingGiftId !== String(d.incomingGiftId)) return;
         if (loggedIn) {
           state.showGiftAuthModal = false;
@@ -1166,7 +1175,7 @@ const sceneApi = {
       ? py + titleRow + gapTitleAnim + animH + gapAnimSub + subRow + gapSubBtn + btnH + py
       : py + titleRow + gapTitleAnim + animH + py + 8;
     const boxX = (W - boxW) / 2;
-    const boxY = Math.round((H - boxH) / 2);
+    const boxY = centerModalY(H, boxH, { padTop: 36, padBottom: Math.max(16, (getCapsuleLayout().safeBottomInset || 0) + 12) });
 
     _drawCollectionModalBg(ctx, boxX, boxY, boxW, boxH, COLLECTION_UI.modalBorderViolet, 20);
 
@@ -1484,14 +1493,15 @@ const sceneApi = {
     const btnH = 42;
     const mh = py + titleH + gap + descH + gap + btnH + py;
     const my = _modalTop(H, mh);
+    const copy = getLegendPurchaseConfirmCopy(meta);
     _drawCollectionModalBg(ctx, mx, my, mw, mh, COLLECTION_UI.modalBorderGold, 18);
-    drawText(ctx, '确认购买（演示）', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
-    drawWrappedText(ctx, '此为本地演示流程，未接入真实支付。购买后将获得 1 个「' + meta.name + '」。', mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
+    drawText(ctx, copy.title, W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
+    drawWrappedText(ctx, copy.desc, mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
     const btnY = my + py + titleH + gap + descH + gap;
     const halfW = (mw - px * 3) / 2;
     const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', TYPE.button, 12, undefined, 500);
     scene.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'cancelPurchase');
-    const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, '确认购买', gradientPink, '#fff', TYPE.button, 12, undefined, 600);
+    const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, copy.confirmLabel, gradientPink, '#fff', TYPE.button, 12, undefined, 600);
     scene.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmPurchase');
   },
 
@@ -1579,38 +1589,49 @@ const sceneApi = {
   },
 
   closeTopModal() {
+    if (state.showGiftAuthModal || state.showGiftReceiveModal) {
+      this.giftReceiveDismiss();
+      return true;
+    }
     if (state.showPreview) {
       state.showPreview = false;
       state.previewBouquetSn = null;
-      return;
+      return true;
     }
     if (state.showEquipSelect) {
       state.showEquipSelect = false;
-      return;
+      return true;
     }
     if (state.showSynPicker) {
       state.showSynPicker = false;
       state.synSelections = {};
       state.synPickerScrollY = 0;
-      return;
+      return true;
     }
     if (state.showSynAnim) {
-      return;
+      return false;
     }
     if (state.showGiftConfirm) {
       state.showGiftConfirm = false;
       state.pendingGiftId = null;
-      return;
+      return true;
     }
     if (state.showPurchaseConfirm) {
       state.showPurchaseConfirm = false;
       state.pendingPurchaseId = null;
-      return;
+      return true;
     }
     if (state.showDetail) {
       state.showDetail = false;
       state.selected = null;
+      return true;
     }
+    return false;
+  },
+
+  handleBackButton() {
+    if (state.showSynAnim) return false;
+    return this.closeTopModal();
   },
 
   closeDetailModal() {
@@ -1796,10 +1817,7 @@ const sceneApi = {
   },
 
   openPurchaseConfirm(id) {
-    if (state.isIOS) {
-      showToast('iOS暂未开放购买');
-      return;
-    }
+    if (toastIfLegendPurchaseBlocked(showToast)) return;
     state.pendingPurchaseId = id;
     state.showPurchaseConfirm = true;
   },
@@ -1818,40 +1836,27 @@ const sceneApi = {
   confirmPurchase() {
     const id = state.pendingPurchaseId;
     const b = id && BALLOON_TYPES.find(x => x.id === id);
-    if (!b || state.isIOS) {
+    if (!b || toastIfLegendPurchaseBlocked(showToast)) {
       this.cancelPurchase();
       return;
     }
     const scene = this;
-    showToast('支付处理中…');
-    purchaseLegendBalloon(id, { meta: b, priceYuan: 1.99 })
-      .then((payResult) => {
-        const channel = payResult.channel || 'mock_pay';
-        const finish = () => {
-          store.addTransaction({
-            type: 'purchase',
-            balloonId: id,
-            quantity: 1,
-            counterparty: '',
-            status: 'success',
-            channel,
-            outTradeNo: payResult.outTradeNo || ''
-          });
-          showToast(channel === 'cloud_pay' ? '购买成功' : '购买成功（演示）');
-          state.showPurchaseConfirm = false;
-          state.pendingPurchaseId = null;
-          scene._refresh();
-        };
-        if (channel === 'cloud_pay') {
-          return syncBalloonInventoryFromCloud().then(finish);
-        }
-        store.addBalloon(id, 1, 'purchase');
-        finish();
-      })
-      .catch((err) => {
+    runLegendPurchase({
+      balloonId: id,
+      meta: b,
+      priceYuan: LEGEND_PRICE_YUAN_DEFAULT,
+      showToast,
+      onSuccess() {
+        state.showPurchaseConfirm = false;
+        state.pendingPurchaseId = null;
+        scene._refresh();
+      }
+    }).catch((err) => {
+      if (err && err.message) {
         console.warn('[collection.confirmPurchase]', err);
-        showToast((err && err.message) || '支付失败');
-      });
+        showToast(err.message || '支付失败');
+      }
+    });
   },
 
   setEquipSelectedLevel(levelIndex) {
@@ -1930,7 +1935,7 @@ const sceneApi = {
       posterTitle,
       subtitle,
       viewerLanding: true
-    }).catch(() => {});
+    });
   },
 
   toggleBouquetStar(sn) {

@@ -75,12 +75,39 @@ exports.main = async (event) => {
       }
     })
 
+    await writeOrderList(order, transaction_id, now)
+
     await markCallback(idempotencyKey, 'HANDLED', null)
     return { errcode: 0, errmsg: 'ok' }
   } catch (e) {
     console.error(e)
     await markCallback(idempotencyKey, 'FAILED', e.message || String(e))
     return { errcode: -2, errmsg: e.message || String(e) }
+  }
+}
+
+/** 写入订单记录（供「订单中心」展示）；orderNo 取微信交易号，缺失时回退商户单号。幂等去重。 */
+async function writeOrderList(order, transactionId, now) {
+  const orderNo = transactionId || order.transactionId || order.outTradeNo
+  try {
+    const exist = await db.collection('order_list').where({ orderNo }).limit(1).get()
+    if (exist.data && exist.data.length) return
+
+    const priceYuan = Math.round((Number(order.totalFee) || 0)) / 100
+    await db.collection('order_list').add({
+      data: {
+        openid: order.openid,
+        orderNo,
+        goodsName: order.goodsName || '传奇气球礼包',
+        goodsContent: order.goodsContent || order.body || '传奇气球×1',
+        price: priceYuan,
+        createTime: order.createTime || now,
+        payTime: now,
+        status: 'completed'
+      }
+    })
+  } catch (e) {
+    console.warn('[payNotify] writeOrderList failed:', e && (e.message || e))
   }
 }
 

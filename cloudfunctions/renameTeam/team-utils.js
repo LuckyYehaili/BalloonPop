@@ -107,14 +107,13 @@ async function ensureDailyActions(transaction, db, openid, date) {
 
 async function bumpDailyAction(transaction, db, openid, date, field, max) {
   const row = await ensureDailyActions(transaction, db, openid, date)
-  if (!row._id) throw new Error('日限记录不存在')
-  const cur = row[field] || 0
+  const cur = (row && row[field]) || 0
   if (cur >= max) {
     throw new Error('今日操作次数已达上限')
   }
   const patch = {}
   patch[field] = cur + 1
-  await transaction.collection('team_daily_actions').doc(row._id).update({ data: patch })
+  await transaction.collection('team_daily_actions').where({ openid, date }).update({ data: patch })
 }
 
 async function getActiveMember(db, openid) {

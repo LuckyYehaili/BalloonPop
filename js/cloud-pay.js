@@ -5,14 +5,14 @@ const { useMockPay, readIOS, isDevelopEnv } = require('./platform');
 
 const LEGEND_PRICE_YUAN_DEFAULT = 1.99;
 
-function createOrder({ totalFee, body, balloonId }) {
+function createOrder({ totalFee, body, balloonId, goodsName, goodsContent }) {
   if (!balloonId) return Promise.reject(new Error('balloonId 必填'));
   if (typeof wx === 'undefined' || !wx.cloud || !wx.cloud.callFunction) {
     return Promise.reject(new Error('wx.cloud 不可用'));
   }
   return wx.cloud.callFunction({
     name: 'createOrder',
-    data: { totalFee, body, balloonId }
+    data: { totalFee, body, balloonId, goodsName, goodsContent }
   }).then((res) => {
     const result = res.result || {};
     if (!result.success) {
@@ -27,8 +27,11 @@ function createLegendOrder(balloonId, options) {
   const totalFee = opts.totalFee != null
     ? opts.totalFee
     : Math.round((opts.priceYuan != null ? opts.priceYuan : LEGEND_PRICE_YUAN_DEFAULT) * 100);
+  const legendName = (opts.meta && opts.meta.name) ? opts.meta.name : '传奇气球';
   const body = opts.body || (opts.meta && opts.meta.name ? '传奇·' + opts.meta.name : '传奇气球');
-  return createOrder({ totalFee, body, balloonId });
+  const goodsName = opts.goodsName || '传奇气球礼包';
+  const goodsContent = opts.goodsContent || (legendName + '×1');
+  return createOrder({ totalFee, body, balloonId, goodsName, goodsContent });
 }
 
 /** 云开发统一下单返回的 payment 调起微信支付 */

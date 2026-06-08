@@ -23,10 +23,13 @@ function syncBalloonInventoryFromCloud() {
     });
 }
 
-function cloudLogin() {
+function cloudLogin(options) {
+  const opts = options || {};
   if (typeof wx === 'undefined' || !wx.cloud || !wx.cloud.callFunction) {
     return Promise.resolve({ ok: false, reason: 'wx.cloud 不可用' });
   }
+  const prev = store.getUser() || {};
+  const markLoggedIn = opts.explicit === true || !!prev.isLoggedIn;
   return wx.cloud.callFunction({ name: 'login' })
     .then((res) => {
       const result = res.result || {};
@@ -34,11 +37,14 @@ function cloudLogin() {
       const openid = result.openid || userInfo.openid || '';
       store.updateUser({
         openid,
-        nickName: userInfo.nickName || userInfo.nickname || '微信用户',
-        avatar: userInfo.avatar || userInfo.avatarUrl || '',
-        isLoggedIn: true,
-        isFirstTime: false
+        nickName: userInfo.nickName || userInfo.nickname || prev.nickName || '微信用户',
+        avatar: userInfo.avatar || userInfo.avatarUrl || prev.avatar || '',
+        isLoggedIn: markLoggedIn,
+        isFirstTime: markLoggedIn ? false : !!prev.isFirstTime
       });
+      if (!markLoggedIn) {
+        return { ok: true, openid, userInfo, silent: true };
+      }
       return syncBalloonInventoryFromCloud()
         .then((sync) => syncTeamFromCloud().then((teamSync) => ({
           ok: true,

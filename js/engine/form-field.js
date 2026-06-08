@@ -169,7 +169,8 @@ function drawFormField(ctx, opts) {
       }
     }
   } else {
-    drawText(ctx, showText, x + INPUT_PAD_X, inputY + inputH / 2, textColor, INPUT_FONT_SIZE, 'left', undefined, INPUT_FONT_WEIGHT);
+    const inputWeight = isPlaceholder ? 400 : INPUT_FONT_WEIGHT;
+    drawText(ctx, showText, x + INPUT_PAD_X, inputY + inputH / 2, textColor, INPUT_FONT_SIZE, 'left', undefined, inputWeight);
     // 光标：追加在文字末尾
     if (isActive) {
       const cursorVisible = Math.floor(Date.now() / 500) % 2 === 0;

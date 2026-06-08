@@ -7,12 +7,15 @@
 | 函数 | 作用 |
 |------|------|
 | `login` | 按 OPENID 查询/创建 `users` |
-| `createOrder` | 创建 `orders` + 统一下单 |
-| `payNotify` | 支付回调：写 `pay_callbacks`、发货 `balloon_inventory` |
+| `createOrder` | 创建 `orders` + 统一下单（含 `goodsName`/`goodsContent`） |
+| `payNotify` | 支付回调：写 `pay_callbacks`、发货 `balloon_inventory`、写入 `order_list`（订单记录） |
 | `getOrder` | 客户端轮询订单发货状态 |
+| `getOrderList` | 订单记录：按 OPENID 倒序返回 `order_list`（订单中心展示） |
 | `sendBalloonGift` | 发起赠送：扣减 `balloon_inventory`，写入 `gifts`（pending） |
 | `claimBalloonGift` | 领取赠送：更新 `gifts`（claimed），接收人入账 |
 | `checkExpiredGifts` | 定时任务：过期 pending 礼物退回赠送人 |
+| `submitFeedback` | 用户建议与反馈（标题、内容、可选配图 fileID；openid/昵称服务端写入 `user_feedback`） |
+| `deleteUserData` | 账号注销：删除当前用户全部云端数据（库存、订单、战队、礼物、反馈等） |
 
 ### 战队冲榜（周榜）
 
@@ -39,6 +42,12 @@
 - 字段：`openid`, `balloonId`, `count`, `source`（`purchase` | `gift`）, `giftable`
 - 唯一索引：`openid` + `balloonId`
 - 仅 `source: purchase` 且 `giftable: true` 可赠送
+
+### `order_list`
+- 用途：订单中心展示（支付合规）。`payNotify` 发货成功后写入，仅展示本人订单。
+- 字段：`openid`, `orderNo`（微信交易号，回退商户单号）, `goodsName`, `goodsContent`, `price`（元，数值）, `createTime`（ms）, `payTime`（ms）, `status`（固定 `completed`）
+- 普通索引：`openid` + `createTime`；按 `orderNo` 幂等去重
+- 微信后台「订单中心」path 配置为启动参数 `scene=orders`（前端路由到 `order-list` 场景）
 
 ### `gifts`
 - 字段：`giftId`, `fromOpenid`, `toOpenid`, `balloonId`, `count`, `status`（`pending` | `claimed` | `expired`）, `createTime`, `expireTime`

@@ -9,7 +9,7 @@ const db = cloud.database()
 exports.main = async (event) => {
   const wxContext = cloud.getWXContext()
   const openid = wxContext.OPENID
-  const { totalFee, body, balloonId } = event
+  const { totalFee, body, balloonId, goodsName, goodsContent } = event
 
   if (!balloonId || typeof balloonId !== 'string') {
     return { success: false, errMsg: 'balloonId 必填，需与 balloons 表 id 一致（如 legend_bubble_aurora）' }
@@ -30,6 +30,8 @@ exports.main = async (event) => {
     totalFeeFen: totalFee,
     body: body || '气球充值',
     balloonId,
+    goodsName: goodsName || '传奇气球礼包',
+    goodsContent: goodsContent || (body || '传奇气球×1'),
     productType: 'balloon',
     quantity: 1,
     status: 'PENDING',

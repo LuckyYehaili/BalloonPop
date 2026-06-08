@@ -8,28 +8,74 @@
 //   6. 完美充气改为绿色矢量气球 + 大按钮 + 进度圆点同行计数
 //   7. 全局弹窗左右各 40（宽 W-80）；标题 ≤18 / 正文与按钮 14 / 辅助 12
 //   8. 重开 toast 统一 90% 不透明 / 14px
-const { drawText, drawButton, drawButtonGradient, drawImage, getImage, loadImages, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, beginScrollView, endScrollView, drawWrappedText, drawModalBackground, drawToggle } = require('../engine/canvas-ui');
+const { drawText, drawEmojiCentered, drawButton, drawButtonGradient, drawImage, getImage, loadImages, showToast, showModal, closeModal, gradientPink, gradientGold, gradientGreen, roundRect, measureText, measureWrappedTextHeight, beginScrollView, endScrollView, drawWrappedText, drawModalBackground, drawToggle } = require('../engine/canvas-ui');
 const { drawBattleAmbient } = require('../engine/battle-ambient');
-const { pathsFor, isSoundOn } = require('../audio');
+const { pathsFor, isSoundOn, vibrateFor, syncBgmFromSettings } = require('../audio');
 const { drawBalloon, drawBalloonShape, drawExplosionBurst, spawnExplosion, resetParticles, getBalloonCenter } = require('../engine/balloon-renderer');
 const { drawBouquetCompletionAnim } = require('../engine/bouquet-renderer');
 const { drawGauge } = require('../engine/gauge-renderer');
-const { getCapsuleLayout } = require('../layout-safe');
+const { getCapsuleLayout, centerModalY } = require('../layout-safe');
 const store = require('../store');
-const { purchaseLegendBalloon } = require('../cloud-pay');
-const { syncBalloonInventoryFromCloud } = require('../cloud-login');
-const { readIOS } = require('../platform');
+const {
+  toastIfLegendPurchaseBlocked,
+  getLegendPurchaseConfirmCopy,
+  runLegendPurchase,
+  LEGEND_PRICE_YUAN_DEFAULT
+} = require('../legend-purchase');
 const { LEVELS, BALLOON_TYPES } = require('../balloons');
 const { getSequence } = require('../emoji-sequences');
 const { shareBouquetAsImage, normalizeBalloonList } = require('../bouquet-share');
+const legalModal = require('../engine/legal-modal');
 
 const AD_RESTART_GRANT = 2;
 const MAX_CUMULATIVE_RETRIES = 5;
-/** 传奇气球单价（元） */
-const LEGEND_PRICE_YUAN = 1.99;
 
 /** 二次确认弹窗正文统一：14px / 行距 20 / 常规字重 */
 const CONFIRM_BODY = { fs: 14, lh: 20, color: 'rgba(255,255,255,0.88)', fw: 400 };
+
+/** 通关分享文案：按关卡随机一条（索引 = 关卡号 1~4） */
+const SHARE_TITLES_BY_LEVEL = {
+  1: [
+    '解锁可爱气球，实现气球自由，玩着超开心～',
+    '送你一束传奇气球，愿你今天拥有彩虹般的好心情！ ✨',
+    '一起来玩呀～简单小挑战，气球超好看，等你来拿！',
+    '气球赏心悦目，玩着玩着就笑出声了。',
+    '入门小菜一碟，这束气球我先抱走啦！'
+  ],
+  2: [
+    '难度悄悄上来，全程小心翼翼，生怕气球突然爆开。',
+    '节奏变得紧张，我猜你未必能轻松过关哦～',
+    '送你一束心跳气球，愿你紧张中也保持好心情！ 😄',
+    '敢来接受挑战吗？气球岌岌可危，一起来护住它们！ 🔥',
+    '考验十足，时刻紧盯气球，玩得格外刺激。',
+    '好不容易闯过，心跳加速，稍有失误就会爆炸。'
+  ],
+  3: [
+    '险象环生，好几次惊险避险，气球差点就爆开了！',
+    '全程神经紧绷，坚持下来太不容易啦，你能撑得住吗？',
+    '送你一束勇气气球，愿你在惊险中也能遇见好运气！ 🎈',
+    '一起来挑战吧！难度拉满，看你能否守护到底～',
+    '危机不断袭来，每一步都忐忑，一般人可顶不住。',
+    '惊心动魄的守护战，闯关体验超带感！'
+  ],
+  4: [
+    '一路闯到终点，气球全部保住，成就感直接拉满！',
+    '圆满通关，这点挑战对我来说就是小 case～',
+    '送你一束胜利气球，愿你心情如气球般轻盈飞扬！ 🌈',
+    '惊险旅程落幕，气球自由稳稳拿捏，一起来玩呀！',
+    '终于闯完所有关卡，全程有惊无险，快来试试通关吧。',
+    '一路有惊无险，收获满满气球！送你一束好心情，一起来玩呀！'
+  ]
+};
+
+/** 取该关卡的随机分享文案；无对应关卡时回退到通用文案 */
+function _pickShareTitle(level) {
+  const list = SHARE_TITLES_BY_LEVEL[level];
+  if (list && list.length) {
+    return list[Math.floor(Math.random() * list.length)];
+  }
+  return '我通关了第' + level + '关，快来看看这束气球！';
+}
 const AUDIO_SRC = {
   pump: pathsFor('pump'),
   explode: pathsFor('explode'),
@@ -86,8 +132,8 @@ let state = {
   /** 第十格弹窗：purchase=无可用传奇；owned=已有可装备传奇 */
   legendSlot10Mode: 'purchase',
   legendSlot10AutoEquipId: null,
-  showAbandonConfirm: false, showResetChallengeConfirm: false, showSharePreview: false, showTutorial: false, tutorialStep: 0,
-  showPrivacy: false, showAdRestartModal: false, adRestartModalContent: '',
+  showAbandonConfirm: false, showResetChallengeConfirm: false, showSharePreview: false,   showTutorial: false, tutorialStep: 0,
+  showAdRestartModal: false, adRestartModalContent: '',
   failHelpOpen: false,
   failFresh: false,
   showRestartDoneToast: false, restartDoneToastRemain: 0, toastTimer: null,
@@ -183,12 +229,24 @@ module.exports = {
     state.legendSlot10AutoEquipId = null;
     state.showAbandonConfirm = false;
     state.showSharePreview = false;
-    state.showPrivacy = false;
     state.showAdRestartModal = false;
     state.pumpDisabled = false;
     state.bouquetAnimStartMs = Date.now();
+    this._modalVibrate('mofa');
     this._playOneShotBattleAudio('mofa', 48);
     try { console.log('[debug] Level complete modal'); } catch (_) {}
+  },
+
+  // 前台恢复（分享后返回、被拉起后返回等）：仅恢复音频与设置，
+  // 严禁重置关卡或关闭弹窗——保留通关气球束弹窗等当前状态，不自动进入下一关。
+  onResume() {
+    const settings = store.getSettings();
+    state.soundOn = settings.soundOn !== false;
+    this._ensurePumpAudio();
+    this._ensureExplodeAudio();
+    this._ensureOneShotBattleAudio('louqi');
+    this._ensureOneShotBattleAudio('mofa');
+    this._ensureOneShotBattleAudio('chenggong');
   },
 
   onHide() {
@@ -318,6 +376,7 @@ module.exports = {
     state.isGameActive = false;
     state.bouquetReady = false;
     state.bouquetAnimStartMs = Date.now();
+    this._modalVibrate('mofa');
     this._playOneShotBattleAudio('mofa', 48);
   },
 
@@ -421,7 +480,7 @@ module.exports = {
 
   // 任意会挡住「按住充气」交互的弹窗 / 提示是否在场
   _anyModalBlockingPumpTip() {
-    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSlotChoice || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || state.showPrivacy || state.failHelpOpen);
+    return !!(state.gameState === 'fail' || state.showLevelComplete || state.showSettings || state.showLegendSlotChoice || state.showLegendSelect || state.showAbandonConfirm || state.showResetChallengeConfirm || state.showSharePreview || state.showAdRestartModal || state.showTutorial || legalModal.isLegalModalOpen() || state.failHelpOpen);
   },
 
   /** 是否绘制全屏黑蒙层（仅弹窗，不含会自动消失的 toast） */
@@ -573,14 +632,14 @@ module.exports = {
           const phase = (Math.sin(state.time * 2.6) + 1) / 2;
           ctx.save();
           ctx.globalAlpha = baseAlpha * (1 - phase);
-          drawText(ctx, s.carouselDefault.emoji || '🔶', cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
+          drawEmojiCentered(ctx, s.carouselDefault.emoji || '🔶', cx, cy, '#ffffff', emojiFs, undefined, 500);
           ctx.globalAlpha = baseAlpha * phase;
-          drawText(ctx, s.carouselLegend.emoji || '👑', cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
+          drawEmojiCentered(ctx, s.carouselLegend.emoji || '👑', cx, cy, '#ffffff', emojiFs, undefined, 500);
           ctx.restore();
         } else {
           ctx.save();
           ctx.globalAlpha = baseAlpha;
-          drawText(ctx, s.emoji || (s.isPaid ? '🔶' : '🎈'), cx, cy + 1, '#ffffff', emojiFs, 'center', undefined, 500);
+          drawEmojiCentered(ctx, s.emoji || (s.isPaid ? '🔶' : '🎈'), cx, cy, '#ffffff', emojiFs, undefined, 500);
           ctx.restore();
         }
 
@@ -688,7 +747,9 @@ module.exports = {
     if (state.showAdRestartModal) this._drawAdRestartModal(ctx, W, H);
     if (state.showAbandonConfirm) this._drawAbandonConfirm(ctx, W, H);
     if (state.showResetChallengeConfirm) this._drawResetChallengeConfirm(ctx, W, H);
-    if (state.showPrivacy) this._drawPrivacyModal(ctx, W, H);
+    if (legalModal.isLegalModalOpen()) {
+      legalModal.drawLegalModal(ctx, this, W, H, { borderColor: 'rgba(255,80,200,0.4)', closeHandler: 'closeLegalModal' });
+    }
     if (state.gameState === 'success' && !state.showLevelComplete
       && (state.synInflateRun || state.balloonInLevel < 9)) {
       this._drawSuccessModal(ctx, W, H);
@@ -753,6 +814,9 @@ module.exports = {
 
   // ─── Touch handling ────────────────────────
   onTouch(type, x, y) {
+    if (legalModal.handleLegalModalTouch(type, x, y)) return true;
+    if (legalModal.isLegalModalOpen()) return false;
+
     const Wm = this.manager.width;
     const Hm = this.manager.height;
 
@@ -860,6 +924,11 @@ module.exports = {
     this._stopPumpAudio();
   },
 
+  /** 弹窗反馈震动（须在 touchend 同步链路内调用） */
+  _modalVibrate(kind) {
+    vibrateFor(kind);
+  },
+
   /** 成功/失败弹窗出现前：立刻停掉打气循环音（含定时器与按住态） */
   _haltPumpSoundImmediately() {
     if (this._pumpTimer) {
@@ -958,10 +1027,7 @@ module.exports = {
   },
   _playExplosionAudio() {
     this._haltPumpSoundImmediately();
-    if (!isSoundOn()) return;
     this._ensureExplodeAudio();
-    const a = this._explodeAudio;
-    if (!a) return;
     if (this._explosionSoundTimer) {
       try { clearTimeout(this._explosionSoundTimer); } catch (_) {}
       this._explosionSoundTimer = null;
@@ -969,6 +1035,9 @@ module.exports = {
     const self = this;
     const fire = () => {
       self._explosionSoundTimer = null;
+      if (!isSoundOn()) return;
+      const a = self._explodeAudio;
+      if (!a) return;
       try {
         if (typeof a.stop === 'function') a.stop();
         self._explodeAudioPendingPlay = true;
@@ -1025,10 +1094,8 @@ module.exports = {
   },
   _playOneShotBattleAudio(kind, delayMs) {
     this._haltPumpSoundImmediately();
-    if (!isSoundOn()) return;
     this._ensureOneShotBattleAudio(kind);
     const a = this['_' + kind + 'Audio'];
-    if (!a) return;
     const timerKey = '_' + kind + 'SoundTimer';
     if (this[timerKey]) {
       try { clearTimeout(this[timerKey]); } catch (_) {}
@@ -1038,6 +1105,8 @@ module.exports = {
     const pendingKey = '_' + kind + 'AudioPendingPlay';
     const fire = () => {
       scene[timerKey] = null;
+      if (!isSoundOn()) return;
+      if (!a) return;
       try {
         if (typeof a.stop === 'function') a.stop();
         scene[pendingKey] = true;
@@ -1063,10 +1132,12 @@ module.exports = {
         const isLast = state.synQueueIdx >= state.synInflateQueue.length - 1;
         if (isLast) {
           this._haltPumpSoundImmediately();
+          this._modalVibrate('mofa');
           state.gameState = 'success';
           setTimeout(() => this._handleNextBalloon(), 80);
           return;
         }
+        this._modalVibrate('chenggong');
         this._playOneShotBattleAudio('chenggong', 0);
         state.gameState = 'success';
         return;
@@ -1074,10 +1145,12 @@ module.exports = {
       // 第 10 个：不播成功弹窗音，通关气球束弹窗在 _handleNextBalloon 里播 mofa
       if (state.balloonInLevel === 9) {
         this._haltPumpSoundImmediately();
+        this._modalVibrate('mofa');
         state.gameState = 'success';
         setTimeout(() => this._handleNextBalloon(), 80);
         return;
       }
+      this._modalVibrate('chenggong');
       this._playOneShotBattleAudio('chenggong', 0);
       state.gameState = 'success';
       return;
@@ -1100,8 +1173,13 @@ module.exports = {
     else { state.failTitle = '充气不足'; state.failDesc = ''; }
     if (reason === 'explode') { setTimeout(() => state.flashWhite = false, 150); setTimeout(() => state.isExploding = false, 520); }
     if (reason === 'explode') { const c = getBalloonCenter(); spawnExplosion(c.x, c.y); }
-    if (reason === 'explode' || reason === 'high') { this._playExplosionAudio(); }
-    if (reason === 'low') { this._playOneShotBattleAudio('louqi', 48); }
+    if (reason === 'low') {
+      this._modalVibrate('louqi');
+      this._playOneShotBattleAudio('louqi', 48);
+    } else {
+      this._modalVibrate('explode');
+      this._playExplosionAudio();
+    }
     state.failFresh = true;
   },
 
@@ -1206,6 +1284,7 @@ module.exports = {
         const anchor = store.getFullRunAnchorMs ? store.getFullRunAnchorMs() : 0;
         const durationMs = anchor ? (Date.now() - anchor) : 0;
         store.addClearRecord({ isFullRun: true, durationMs, hasLegend: isPaidSlot });
+        try { store.recordFullClear(); } catch (_) {}
         try { store.clearFullRunAnchor(); } catch (_) {}
         try {
           require('../cloud-team').recordFullClear('level_04')
@@ -1240,27 +1319,31 @@ module.exports = {
     const bw = Math.ceil(tw + padX * 2);
     const bh = Math.ceil(fontSize + padY * 2);
     const arrowH = 8;
+    const arrowHalfW = 7;
+    const r = 12;
     let bx = Math.round(anchorX - bw / 2);
     let by = Math.round(anchorY - bh - arrowH - 8);
     if (by < 80) by = 80;
     bx = Math.max(12, Math.min(W - 12 - bw, bx));
 
-    ctx.save();
-    roundRect(ctx, bx, by, bw, bh, 12);
-    ctx.fillStyle = 'rgba(17,24,39,0.92)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,80,200,0.55)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
-    drawText(ctx, text, bx + bw / 2, by + bh / 2, '#ffffff', fontSize, 'center', undefined, 600);
+    const arrowX = Math.max(bx + r + arrowHalfW, Math.min(bx + bw - r - arrowHalfW, anchorX));
+    const baseY = by + bh;
+    const tipY = baseY + arrowH;
 
-    // 小箭头指向按钮
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(anchorX - 7, by + bh - 0.5);
-    ctx.lineTo(anchorX, by + bh + arrowH);
-    ctx.lineTo(anchorX + 7, by + bh - 0.5);
+    ctx.moveTo(bx + r, by);
+    ctx.lineTo(bx + bw - r, by);
+    ctx.arcTo(bx + bw, by, bx + bw, by + r, r);
+    ctx.lineTo(bx + bw, baseY - r);
+    ctx.arcTo(bx + bw, baseY, bx + bw - r, baseY, r);
+    ctx.lineTo(arrowX + arrowHalfW, baseY);
+    ctx.lineTo(arrowX, tipY);
+    ctx.lineTo(arrowX - arrowHalfW, baseY);
+    ctx.lineTo(bx + r, baseY);
+    ctx.arcTo(bx, baseY, bx, baseY - r, r);
+    ctx.lineTo(bx, by + r);
+    ctx.arcTo(bx, by, bx + r, by, r);
     ctx.closePath();
     ctx.fillStyle = 'rgba(17,24,39,0.92)';
     ctx.fill();
@@ -1268,6 +1351,8 @@ module.exports = {
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
+
+    drawText(ctx, text, bx + bw / 2, by + bh / 2, '#ffffff', fontSize, 'center', undefined, 600);
   },
 
   // ─── Modal background helper ─────────────────
@@ -1637,7 +1722,11 @@ module.exports = {
   _drawSettingsModal(ctx, W, H) {
     const mw = W - 80, mx = 40;
     const py = 22, px = 20;
-    const titleH = 22, gap = 10, rowH = 40, actionH = 44, footerH = 28;
+    const titleH = 22, gap = 10, rowH = 40, actionH = 44;
+    const footerLineH = 16;
+    const footerText = '儿童隐私保护声明及监护人须知';
+    const footerTextH = measureWrappedTextHeight(ctx, footerText, mw - px * 2, footerLineH, 12, 400);
+    const footerH = Math.max(28, footerTextH + 4);
     const settings = store.getSettings();
     const actions = [
       { text: state.synInflateRun ? '放弃合成' : '放弃挑战', style: 'rgba(255,23,68,0.2)', color: '#ff1744', h: 'abandonChallenge' }
@@ -1677,7 +1766,11 @@ module.exports = {
     });
 
     const footerY = actionsY + actionsBlockH + gap;
-    drawText(ctx, '儿童隐私保护声明及监护人须知', W / 2, footerY + footerH / 2, 'rgba(255,255,255,0.5)', 12, 'center', undefined, 400);
+    drawText(
+      ctx, footerText,
+      W / 2, footerY + footerLineH / 2,
+      'rgba(255,255,255,0.5)', 12, 'center', undefined, 400
+    );
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(mx + px, footerY - 4); ctx.lineTo(mx + mw - px, footerY - 4); ctx.stroke();
@@ -1685,35 +1778,9 @@ module.exports = {
     this.manager.addTouchable(mx + px, footerY - 2, mw - px * 2, footerH + 4, 'openPrivacy');
     ctx.restore();
   },
-  openPrivacy() { state.showPrivacy = true; },
-  closePrivacy() { state.showPrivacy = false; },
-  _drawPrivacyModal(ctx, W, H) {
-    const mw = W - 80, mx = 40;
-    const py = 22, px = 20;
-    const titleH = 22, gap = 12, scrollH = 140, btnH = 44;
-    const mh = py + titleH + gap + scrollH + gap + btnH + py;
-    const my = (H - mh) / 2;
-
-    ctx.save();
-    this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.4)');
-
-    drawText(ctx, '✕', mx + mw - 22, my + py + 8, 'rgba(255,255,255,0.5)', 14, 'center');
-    this.manager.addTouchable(mx + mw - 44, my + py - 4, 44, 32, 'closePrivacy');
-
-    drawText(ctx, '儿童隐私保护声明', W / 2, my + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-
-    const scrollY = my + py + titleH + gap;
-    ctx.save();
-    roundRect(ctx, mx + px, scrollY, mw - px * 2, scrollH, 12);
-    ctx.fillStyle = 'rgba(255,255,255,0.04)'; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 0.5; ctx.stroke();
-    ctx.restore();
-    drawWrappedText(ctx, '我们非常重视儿童隐私保护。如您为未成年人，请在监护人指导下使用本小程序。我们不会收集 14 岁以下用户的个人信息。详情请查看完整隐私政策。', mx + px + 12, scrollY + 12, mw - px * 2 - 24, 22, 'rgba(255,255,255,0.7)', 14);
-
-    const cb = drawButtonGradient(ctx, mx + px, my + mh - py - btnH, mw - px * 2, btnH, '关闭', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
-    this.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'closePrivacy');
-    ctx.restore();
-  },
+  openPrivacy() { legalModal.openChildrenPrivacy(); },
+  closeLegalModal() { legalModal.closeLegalModal(); },
+  _legalModalAbsorb() { /* 阻断穿透 */ },
 
   // ─── Level Complete Modal（配色与「完美充气」成功弹窗一致：深绿底 + 薄荷描边 + 绿青主按钮） ──
   _drawLevelCompleteModal(ctx, W, H) {
@@ -1770,7 +1837,7 @@ module.exports = {
       mh = Math.min(maxModalH, fixedH + bouquetH);
       bouquetH = mh - fixedH;
     }
-    const my = Math.max(8, (H - mh) / 2);
+    const my = centerModalY(H, mh, { padTop: 10, padBottom: Math.max(16, (getCapsuleLayout().safeBottomInset || 0) + 12) });
 
     ctx.save();
     roundRect(ctx, mx, my, mw, mh, 24);
@@ -1823,7 +1890,7 @@ module.exports = {
       ctx,
       (state.completedBalloonsList || []).map(_normalizeBouquetBalloon),
       bqX, bqY, bqW, bouquetH, elapsedSec,
-      { layout: 'centered', offsetY: 32 }
+      { layout: 'centered' }
     );
 
     const statsY = bqY + bouquetH + statsGap;
@@ -1918,7 +1985,7 @@ module.exports = {
         posterTitle: '传奇合成气球束',
         subtitle: '消耗 ' + state.synTotalCount + ' 个传奇 · 合成专属',
         viewerLanding: true
-      }).catch(() => {});
+      });
       return;
     }
     const level = state.currentLevelIdx + 1;
@@ -1926,7 +1993,7 @@ module.exports = {
     const balloons = normalizeBalloonList(
       (state.completedBalloonsList || []).map(_normalizeBouquetBalloon)
     );
-    const shareTitle = '我通关了第' + level + '关，快来看看这束气球！';
+    const shareTitle = _pickShareTitle(level);
     const posterTitle = '第 ' + level + ' 关气球束';
     const subtitle = levelName ? levelName + ' · 10 个气球全部充气成功' : '10 个气球全部充气成功';
     showToast('正在生成分享图…');
@@ -1936,7 +2003,7 @@ module.exports = {
       posterTitle,
       subtitle,
       viewerLanding: true
-    }).catch(() => {});
+    });
   },
 
   // ─── 第十个气球：默认 / 购买传奇 / 已有可装备 ──
@@ -2292,7 +2359,7 @@ module.exports = {
     ctx.restore();
   },
 
-  /** 购买传奇气球确认（叠在选择弹窗之上） */
+  /** 购买传奇气球确认（叠在选择弹窗之上，文案与图鉴一致） */
   _drawLegendPayConfirm(ctx, W, H) {
     const bId = state.legendPayBalloonId;
     const meta = bId && BALLOON_TYPES.find(b => b.id === bId);
@@ -2302,34 +2369,29 @@ module.exports = {
     this._drawSecondModalBackdrop(ctx, W, H);
     this.manager.addTouchable(0, 0, W, H, 'cancelLegendPay');
 
-    const cardW = W - 80, cardX = 40;
-    const py = 22, px = 20;
-    const titleH = 24, gap = 12, descBoxH = 52, btnH = 48;
-    const ch = py + titleH + gap + descBoxH + gap + btnH + gap + btnH + py;
-    const cy = (H - ch) / 2;
+    const mw = W - 88;
+    const mx = 44;
+    const py = 18;
+    const px = 18;
+    const titleH = 20;
+    const gap = 10;
+    const btnH = 42;
+    const extraDesc = '支付成功后将自动装备到本关第10个气球位。';
+    const copy = getLegendPurchaseConfirmCopy(meta, extraDesc);
+    const bodyMaxW = mw - px * 2;
+    const descH = Math.max(48, measureWrappedTextHeight(ctx, copy.desc, bodyMaxW, 20, CONFIRM_BODY.fs, CONFIRM_BODY.fw));
+    const mh = py + titleH + gap + descH + gap + btnH + py;
+    const my = centerModalY(H, mh, { minTop: 48, bottomInset: 24 });
 
-    this._drawModalBg(ctx, cardX, cy, cardW, ch, 'rgba(255,80,200,0.55)', 22);
-    drawText(ctx, '购买传奇气球', W / 2, cy + py + titleH / 2, '#ffffff', 18, 'center', undefined, 700);
-    const bodyTop = cy + py + titleH + gap;
-    drawText(ctx, '「' + meta.name + '」每只¥' + LEGEND_PRICE_YUAN.toFixed(2), W / 2, bodyTop + 12, CONFIRM_BODY.color, CONFIRM_BODY.fs, 'center', undefined, CONFIRM_BODY.fw);
-    drawText(ctx, '支付成功后将自动装备到本关第10个气球位。', W / 2, bodyTop + 36, CONFIRM_BODY.color, CONFIRM_BODY.fs, 'center', undefined, CONFIRM_BODY.fw);
-
-    const btnX = cardX + px;
-    const btnW = cardW - px * 2;
-    const btnY = bodyTop + descBoxH + gap;
-    const ok = drawButtonGradient(ctx, btnX, btnY, btnW, btnH, '支付' + LEGEND_PRICE_YUAN.toFixed(2) + '元', gradientPink, '#fff', 14, 16, 'rgba(244,114,182,0.32)', 700);
-    this.manager.addTouchable(ok.x, ok.y, ok.w, ok.h, 'confirmLegendPay');
-    const cancelY = btnY + btnH + gap;
-    ctx.save();
-    roundRect(ctx, btnX, cancelY, btnW, btnH, 16);
-    ctx.fillStyle = 'rgba(244,114,182,0.06)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(244,114,182,0.42)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.restore();
-    drawText(ctx, '取消', W / 2, cancelY + btnH / 2, '#f472b6', 14, 'center', undefined, 600);
-    this.manager.addTouchable(btnX, cancelY, btnW, btnH, 'cancelLegendPay');
+    this._drawModalBg(ctx, mx, my, mw, mh, 'rgba(255,80,200,0.55)', 22);
+    drawText(ctx, copy.title, W / 2, my + py + titleH / 2, '#ffffff', 16, 'center', undefined, 700);
+    drawWrappedText(ctx, copy.desc, mx + px, my + py + titleH + gap, bodyMaxW, 20, CONFIRM_BODY.color, CONFIRM_BODY.fs, CONFIRM_BODY.fw);
+    const btnY = my + py + titleH + gap + descH + gap;
+    const halfW = (mw - px * 3) / 2;
+    const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', 14, 12, undefined, 500);
+    this.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'cancelLegendPay');
+    const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, copy.confirmLabel, gradientPink, '#fff', 14, 12, undefined, 600);
+    this.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmLegendPay');
     ctx.restore();
   },
 
@@ -2345,6 +2407,7 @@ module.exports = {
       this._equipLegendFromModal(bId);
       return;
     }
+    if (toastIfLegendPurchaseBlocked(showToast)) return;
     state.legendPayBalloonId = bId;
     state.showLegendPayConfirm = true;
     state._legendSelectDrag = null;
@@ -2379,46 +2442,28 @@ module.exports = {
       state.legendPayBalloonId = null;
       return;
     }
-    if (readIOS()) {
-      showToast('iOS 暂不支持购买');
-      return;
-    }
     const meta = BALLOON_TYPES.find(b => b.id === bId);
     const scene = this;
-    showToast('支付处理中…');
-    purchaseLegendBalloon(bId, { meta, priceYuan: LEGEND_PRICE_YUAN })
-      .then((payResult) => {
-        const channel = payResult.channel || 'mock_pay';
-        const finish = () => {
-          store.addTransaction({
-            type: 'purchase',
-            balloonId: bId,
-            balloonName: meta ? meta.name : bId,
-            quantity: 1,
-            amountYuan: LEGEND_PRICE_YUAN,
-            status: 'success',
-            channel,
-            outTradeNo: payResult.outTradeNo || ''
-          });
-          store.equipLegend(state.currentLevelIdx, bId);
-          state.paidBalloonUsed = true;
-          state.showLegendPayConfirm = false;
-          state.legendPayBalloonId = null;
-          scene._syncDerived({});
-          showToast(channel === 'cloud_pay' ? '支付成功，传奇气球已装上' : '传奇气球已装上（演示）');
-          state.showLegendSelect = false;
-          if (state.balloonInLevel === 9) scene._finishLegendSlot10Choice();
-        };
-        if (channel === 'cloud_pay') {
-          return syncBalloonInventoryFromCloud().then(finish);
-        }
-        store.addBalloon(bId, 1, 'purchase');
-        finish();
-      })
-      .catch((err) => {
+    runLegendPurchase({
+      balloonId: bId,
+      meta,
+      priceYuan: LEGEND_PRICE_YUAN_DEFAULT,
+      showToast,
+      onSuccess() {
+        store.equipLegend(state.currentLevelIdx, bId);
+        state.paidBalloonUsed = true;
+        state.showLegendPayConfirm = false;
+        state.legendPayBalloonId = null;
+        scene._syncDerived({});
+        state.showLegendSelect = false;
+        if (state.balloonInLevel === 9) scene._finishLegendSlot10Choice();
+      }
+    }).catch((err) => {
+      if (err && err.message) {
         console.warn('[battle.confirmLegendPay]', err);
-        showToast((err && err.message) || '支付失败');
-      });
+        showToast(err.message || '支付失败');
+      }
+    });
   },
 
   // ─── Reset Challenge Confirm ──
@@ -2491,7 +2536,11 @@ module.exports = {
     store.updateSettings({ soundOn: !s.soundOn });
     state.soundOn = !s.soundOn;
   },
-  toggleMusic() { const s = store.getSettings(); store.updateSettings({ musicOn: !s.musicOn }); },
+  toggleMusic() {
+    const s = store.getSettings();
+    store.updateSettings({ musicOn: !s.musicOn });
+    syncBgmFromSettings();
+  },
   toggleVibration() { const s = store.getSettings(); store.updateSettings({ vibrationOn: !s.vibrationOn }); },
   resetLevel() {
     if (state.restartChances <= 0) { showToast('免费重开次数已用完'); return; }
@@ -2565,6 +2614,55 @@ module.exports = {
   },
   onAdRestartConfirm() { state.showAdRestartModal = false; this._resetInLevel(); },
   onAdRestartCancel() { state.showAdRestartModal = false; state.isGameActive = false; },
+
+  handleBackButton() {
+    if (state.showResetChallengeConfirm) {
+      state.showResetChallengeConfirm = false;
+      return true;
+    }
+    if (state.showAbandonConfirm) {
+      state.showAbandonConfirm = false;
+      return true;
+    }
+    if (state.showAdRestartModal) {
+      state.showAdRestartModal = false;
+      return true;
+    }
+    if (state.showRestartDoneToast) {
+      state.showRestartDoneToast = false;
+      return true;
+    }
+    if (state.showLegendPayConfirm) {
+      state.showLegendPayConfirm = false;
+      state.legendPayBalloonId = null;
+      return true;
+    }
+    if (state.showLegendSelect) {
+      this.closeLegendSelect();
+      return true;
+    }
+    if (state.showLegendSlotChoice) {
+      state.showLegendSlotChoice = false;
+      return true;
+    }
+    if (state.showSettings) {
+      this.closeSettings();
+      return true;
+    }
+    if (state.showTutorial) {
+      this.closeTutorial();
+      return true;
+    }
+    if (state.failHelpOpen) {
+      this.closeFailHelp();
+      return true;
+    }
+    if (state.showLevelComplete) {
+      state.showLevelComplete = false;
+      return true;
+    }
+    return false;
+  },
 
 };
 

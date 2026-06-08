@@ -1,0 +1,9 @@
+{
+  "name": "deleteUserData",
+  "version": "1.0.0",
+  "description": "Delete all cloud data for the requesting user (account deletion)",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

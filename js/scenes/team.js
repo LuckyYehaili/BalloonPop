@@ -1,7 +1,8 @@
 // 战队统一页：我的战队 / 战队排名 / 战队推荐（Canvas，与首页视觉一致）
 const {
   drawBackground, drawText, drawButtonGradient, drawImage, showToast, roundRect,
-  gradientPink, measureText, loadImages, getImage, drawModalBackground
+  gradientPink, measureText, loadImages, getImage, drawModalBackground,
+  drawWrappedText, measureWrappedTextHeight
 } = require('../engine/canvas-ui');
 const store = require('../store');
 const cloudTeam = require('../cloud-team');
@@ -1178,7 +1179,11 @@ module.exports = {
 
     drawText(ctx, '🎉  战队创建成功！', cardX + cardW / 2, cardY + 36, '#fff', 18, 'center', 'rgba(255,80,200,0.55)', 800);
     drawText(ctx, state.createdTeamName || '我的战队', cardX + cardW / 2, cardY + 64, NEON, 14, 'center', undefined, 700);
-    drawText(ctx, '邀请队友一起冲榜，或立刻开始挑战！', cardX + cardW / 2, cardY + 96, 'rgba(255,255,255,0.6)', 12, 'center', undefined, 400);
+    drawWrappedText(
+      ctx, '邀请队友一起冲榜，或立刻开始挑战！',
+      cardX + 16, cardY + 84, cardW - 32, 18,
+      'rgba(255,255,255,0.6)', 12, 400
+    );
 
     const btnH = 44;
     const gap = 10;
@@ -1210,7 +1215,11 @@ module.exports = {
 
     const cardW = W - 80;
     const cardX = 40;
-    const cardH = 210;
+    const innerW = cardW - 48;
+    const bodyLineH = 20;
+    const body1H = measureWrappedTextHeight(ctx, '确定退出当前战队吗？', innerW, bodyLineH, 14, 400);
+    const body2H = measureWrappedTextHeight(ctx, '退出后当天无法再创建或加入任何战队', innerW, bodyLineH, 14, 400);
+    const cardH = 36 + 20 + body1H + 8 + body2H + 20 + 44 + 20;
     const cardY = (H - cardH) / 2;
 
     // 卡背：深紫渐变 + 红警描边
@@ -1232,14 +1241,19 @@ module.exports = {
     // 标题
     drawText(ctx, '退出战队', cardX + cardW / 2, cardY + 36, '#fff', 18, 'center', 'rgba(255,107,138,0.5)', 800);
 
-    // 说明文字（分两行，二次确认对话框正文统一 14）
-    drawText(ctx, '确定退出当前战队吗？', cardX + cardW / 2, cardY + 70, 'rgba(255,255,255,0.75)', 14, 'center', undefined, 400);
-    drawText(ctx, '退出后当天无法再创建或加入任何战队', cardX + cardW / 2, cardY + 96, 'rgba(255,107,138,0.85)', 14, 'center', undefined, 400);
+    // 说明文字（自动换行，二次确认对话框正文统一 14）
+    const bodyX = cardX + 24;
+    const body1Y = cardY + 56;
+    drawWrappedText(ctx, '确定退出当前战队吗？', bodyX, body1Y, innerW, bodyLineH, 'rgba(255,255,255,0.75)', 14, 400);
+    drawWrappedText(
+      ctx, '退出后当天无法再创建或加入任何战队',
+      bodyX, body1Y + body1H + 8, innerW, bodyLineH,
+      'rgba(255,107,138,0.85)', 14, 400
+    );
 
     // 按钮行
     const btnH = 44;
     const gap = 10;
-    const innerW = cardW - 48;
     const bw = (innerW - gap) / 2;
     const bY = cardY + cardH - btnH - 20;
     const cancelX = cardX + 24;
@@ -1412,8 +1426,16 @@ module.exports = {
     const textFs = 14;                                  // 行内解释（正文 14）
     const labelToText = 8;                              // 同组：标题与解释之间的间距
     const groupGap = 16;                                // 不同组之间的间距
-    const groupH = labelFs + labelToText + textFs;      // 单组高度
-    const rulesH = rules.length * groupH + (rules.length - 1) * groupGap;
+    const textLineH = 20;                             // 正文行高
+    const textMaxW = cardW - pad * 2;
+    const labelColor = NEON;
+    const textColor = 'rgba(255,255,255,0.78)';
+
+    const groupLayouts = rules.map((r) => {
+      const textH = measureWrappedTextHeight(ctx, r.text, textMaxW, textLineH, textFs, 400);
+      return { label: r.label, text: r.text, groupH: labelFs + labelToText + textH };
+    });
+    const rulesH = groupLayouts.reduce((sum, g, i) => sum + g.groupH + (i < groupLayouts.length - 1 ? groupGap : 0), 0);
     const btnH = 44;
     const bodyToBtn = 24;                               // 正文末尾到按钮的间距
     const btnToBottom = 20;                             // 按钮到卡底
@@ -1439,16 +1461,16 @@ module.exports = {
     // 标题
     drawText(ctx, '🏆 战队榜活动规则', cardX + cardW / 2, cardY + titleTop + titleH / 2, GOLD, 18, 'center', 'rgba(255,215,64,0.5)', 800);
 
-    // 正文：每组上下两行（标题 + 解释），组间 16px
-    const labelColor = NEON;
-    const textColor = 'rgba(255,255,255,0.78)';
+    // 正文：每组上下两行（标题 + 解释），组间 16px；正文按弹窗宽度自动换行
     const bodyTop = cardY + titleTop + titleH + titleToBody;
-    rules.forEach((r, i) => {
-      const groupTop = bodyTop + i * (groupH + groupGap);
-      const labelCy = groupTop + labelFs / 2;
-      const textCy = groupTop + labelFs + labelToText + textFs / 2;
-      drawText(ctx, r.label, cardX + pad, labelCy, labelColor, labelFs, 'left', undefined, 700);
-      drawText(ctx, r.text, cardX + pad, textCy, textColor, textFs, 'left', undefined, 400);
+    let groupTop = bodyTop;
+    groupLayouts.forEach((g) => {
+      drawText(ctx, g.label, cardX + pad, groupTop + labelFs / 2, labelColor, labelFs, 'left', undefined, 700);
+      drawWrappedText(
+        ctx, g.text, cardX + pad, groupTop + labelFs + labelToText,
+        textMaxW, textLineH, textColor, textFs, 400
+      );
+      groupTop += g.groupH + groupGap;
     });
 
     // 关闭按钮（紫粉渐变，整条）
@@ -2013,6 +2035,35 @@ module.exports = {
     }
     if (type === 'end' || type === 'tap') {
       state.isDraggingScroll = false;
+    }
+    return false;
+  },
+
+  handleBackButton() {
+    if (state.showRulesModal) {
+      this.closeRulesModal();
+      return true;
+    }
+    if (state.showCreateModal) {
+      this.cancelCreateModal();
+      return true;
+    }
+    if (state.showSuccessModal) {
+      state.showSuccessModal = false;
+      return true;
+    }
+    if (state.showLeaveModal) {
+      state.showLeaveModal = false;
+      return true;
+    }
+    if (state.showJoinModal) {
+      this.cancelJoinModal();
+      return true;
+    }
+    if (state.editingField) {
+      state.editingField = null;
+      if (typeof wx !== 'undefined' && wx.hideKeyboard) wx.hideKeyboard();
+      return true;
     }
     return false;
   }

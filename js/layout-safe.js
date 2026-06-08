@@ -78,4 +78,18 @@ function getCapsuleLayout() {
   };
 }
 
-module.exports = { getCapsuleLayout };
+/** 弹窗在可视区内垂直居中，上下留空对称（含底部 Home 指示条安全区） */
+function centerModalY(windowH, modalH, options) {
+  const o = options || {};
+  const layout = getCapsuleLayout();
+  const h = Number(windowH) || layout.windowHeight || 667;
+  const mh = Math.max(0, Number(modalH) || 0);
+  const padTop = o.padTop != null ? o.padTop : 12;
+  const padBottom = o.padBottom != null
+    ? o.padBottom
+    : Math.max(12, (layout.safeBottomInset || 0) + 10);
+  const avail = h - padTop - padBottom;
+  return padTop + Math.max(0, Math.round((avail - mh) / 2));
+}
+
+module.exports = { getCapsuleLayout, centerModalY };

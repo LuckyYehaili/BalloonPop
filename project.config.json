@@ -5,6 +5,9 @@
       { "type": "folder", "value": "cloudfunctions" },
       { "type": "folder", "value": "pages" },
       { "type": "folder", "value": "cloud-connect-mp" },
+      { "type": "folder", "value": "scripts" },
+      { "type": "folder", "value": "docs" },
+      { "type": "folder", "value": "node_modules" },
       { "type": "file", "value": "app.js" },
       { "type": "file", "value": "app.json" },
       { "type": "file", "value": "sitemap.json" }
@@ -20,7 +23,7 @@
     "urlCheck": true,
     "es6": false,
     "postcss": true,
-    "minified": false,
+    "minified": true,
     "enhance": false
   },
   "compileType": "game",
