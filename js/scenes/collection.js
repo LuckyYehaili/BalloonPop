@@ -32,7 +32,7 @@ const TYPE = {
   modalTitle: 15,
   modalBody: 14,
   modalSub: 12,
-  button: 14,
+  button: 12,
   close: 13
 };
 const COLLECTION_UI = {
@@ -298,7 +298,7 @@ function _getLegendCardActions(l, isIOS) {
       actions.push({ key: 'openGiftConfirm', label: '赠送', color: UX.success, fw: 500 });
     }
     if (!isIOS) {
-      actions.push({ key: 'openPurchaseConfirm', label: '继续购买', color: UX.gold, fw: 600 });
+      actions.push({ key: 'openPurchaseConfirm', label: '购买', color: UX.gold, fw: 600 });
     }
   } else if (isIOS) {
     actions.push({
@@ -341,7 +341,7 @@ function _getLegendDetailActions(sel, isIOS) {
   if (!isIOS) {
     actions.push({
       key: 'openPurchaseFromDetail',
-      label: sel.owned ? '继续购买' : '购买',
+      label: '购买',
       style: 'purchase'
     });
   }
@@ -357,20 +357,6 @@ function _modalTop(H, mh) {
     padTop: 36,
     padBottom: Math.max(16, (getCapsuleLayout().safeBottomInset || 0) + 12)
   });
-}
-
-function _shareAppMessage(title, query, fallbackText) {
-  if (typeof wx !== 'undefined' && wx.shareAppMessage) {
-    try {
-      wx.shareAppMessage({ title, query: query || '', imageUrl: '' });
-      return true;
-    } catch (e) {
-      showToast(fallbackText || '请使用右上角菜单分享');
-      return false;
-    }
-  }
-  showToast(fallbackText || '请使用右上角菜单分享');
-  return false;
 }
 
 /** 未解锁关卡：灰色半透明圆球占位（不展示真实造型） */
@@ -412,6 +398,7 @@ const sceneApi = {
     state.pendingGiftId = null;
     state.pendingPurchaseId = null;
     state.synPickerDragging = false;
+    state._giftSending = false;
     state.selected = null;
     state.isDraggingScroll = false;
 
@@ -602,7 +589,7 @@ const sceneApi = {
     }
 
     const anyModal = state.showDetail || state.showEquipSelect || state.showSynPicker ||
-      state.showSynAnim || state.showGiftConfirm || state.showPurchaseConfirm || state.showPreview;
+      state.showSynAnim || state.showPurchaseConfirm || state.showPreview;
     if (anyModal) {
       drawModalBackground(ctx, W, H);
       if (!state.showSynAnim) scene.manager.addTouchable(0, 0, W, H, 'closeTopModal');
@@ -611,7 +598,6 @@ const sceneApi = {
     if (state.showEquipSelect) this._drawEquipModal(ctx, W, H);
     if (state.showSynPicker) this._drawSynPickerModal(ctx, W, H);
     if (state.showSynAnim) this._drawSynAnimOverlay(ctx, W, H);
-    if (state.showGiftConfirm) this._drawGiftConfirm(ctx, W, H);
     if (state.showPurchaseConfirm) this._drawPurchaseConfirm(ctx, W, H);
     if (state.showPreview) this._drawBouquetPreview(ctx, W, H);
     if (state.showGiftReceiveModal) {
@@ -900,7 +886,7 @@ const sceneApi = {
     drawText(ctx, '✕', mx + mw - 18, my + py + 4, 'rgba(255,255,255,0.45)', TYPE.close, 'center');
     scene.manager.addTouchable(mx + mw - 44, my + py - 4, 44, 36, 'closeEquipModal');
 
-    drawText(ctx, '穿戴「' + meta.name + '」到关卡', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', 'rgba(255,215,0,0.35)', 600);
+    drawText(ctx, '装备「' + meta.name + '」到关卡', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', 'rgba(255,215,0,0.35)', 600);
 
     const rowInnerW = mw - px * 2;
     const radioR = 9;
@@ -915,8 +901,8 @@ const sceneApi = {
       const eqMeta = eqId ? BALLOON_TYPES.find(x => x.id === eqId) : null;
       const equipCheck = store.canEquipLegend(idx, bId);
       const blocked = !equipCheck.ok;
-      let label = eqMeta ? ('当前：' + eqMeta.emoji + ' ' + eqMeta.name) : '当前：未装备';
-      if (blocked && equipCheck.reason === '已充气') label = '已充气';
+      let label = eqMeta ? (eqMeta.emoji + ' ' + eqMeta.name) : '未装备';
+      if (blocked && equipCheck.reason === '已充气') label = '已装备';
       const selected = state.equipSelectedLevelIdx === idx;
 
       ctx.save();
@@ -1023,7 +1009,7 @@ const sceneApi = {
     ctx.stroke();
     ctx.restore();
     {
-      const hintText = '选 2–10 个传奇气球，每个都需充气后再合成束';
+      const hintText = '消耗2-10个传奇气球，为它们充气后再合成气球束';
       const hintMaxW = gridInnerW - 20;
       const hintLineH = 16;
       const hintFs = TYPE.modalSub;
@@ -1206,31 +1192,7 @@ const sceneApi = {
     }
   },
 
-  _drawGiftConfirm(ctx, W, H) {
-    const scene = this;
-    const id = state.pendingGiftId;
-    const meta = id && BALLOON_TYPES.find(b => b.id === id);
-    if (!meta) return;
-    const mw = W - 88;
-    const mx = 44;
-    const py = 18;
-    const px = 18;
-    const titleH = 20;
-    const gap = 10;
-    const descH = 58;
-    const btnH = 42;
-    const mh = py + titleH + gap + descH + gap + btnH + py;
-    const my = _modalTop(H, mh);
-    _drawCollectionModalBg(ctx, mx, my, mw, mh, 'rgba(134,239,172,0.32)', 18);
-    drawText(ctx, '确认发起赠送？', W / 2, my + py + titleH / 2, '#ffffff', TYPE.modalTitle, 'center', undefined, 600);
-    drawWrappedText(ctx, '「' + meta.name + '」将进入冻结状态（24 小时内有效），请通过右上角菜单分享给好友领取。', mx + px, my + py + titleH + gap, mw - px * 2, 20, 'rgba(255,255,255,0.88)', TYPE.modalBody, 400);
-    const btnY = my + py + titleH + gap + descH + gap;
-    const halfW = (mw - px * 3) / 2;
-    const cb = drawButtonGradient(ctx, mx + px, btnY, halfW, btnH, '取消', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.85)', TYPE.button, 12, undefined, 500);
-    scene.manager.addTouchable(cb.x, cb.y, cb.w, cb.h, 'cancelGift');
-    const db = drawButtonGradient(ctx, mx + px * 2 + halfW, btnY, halfW, btnH, '确认赠送', 'rgba(134,239,172,0.18)', UX.success, TYPE.button, 12, undefined, 600);
-    scene.manager.addTouchable(db.x, db.y, db.w, db.h, 'confirmGift');
-  },
+
 
   _drawGiftReceiveModal(ctx, W, H) {
     const scene = this;
@@ -1509,16 +1471,16 @@ const sceneApi = {
     const scene = this;
     const b = state.bouquets.find(x => x.sn === state.previewBouquetSn);
     if (!b) return;
-    // 弹窗略窄、花束区略矮，比例接近列表缩略图，避免「铺满屏」显得笨重
+    // 弹窗略窄，花束区加高，预览效果更接近通关合成弹窗
     const mw = Math.min(W - 72, 304);
     const mx = (W - mw) / 2;
     const py = 16;
     const px = 14;
     const titleH = 20;
-    const titleMetaGap = 12;
+    const titleMetaGap = 10;
     const gap = 6;
     const metaH = 36;
-    const bodyH = 132;
+    const bodyH = 176;
     const btnH = 40;
     const mh = py + titleH + titleMetaGap + metaH + bodyH + gap + btnH + py;
     const my = _modalTop(H, mh);
@@ -1612,6 +1574,7 @@ const sceneApi = {
       return false;
     }
     if (state.showGiftConfirm) {
+      // 旧版确认弹窗已不再使用，点击赠送直接分享，直接关闭
       state.showGiftConfirm = false;
       state.pendingGiftId = null;
       return true;
@@ -1776,44 +1739,43 @@ const sceneApi = {
       showToast(b && b.owned && !b.giftable ? '仅本人购买的气球可赠送' : '该气球不可转赠');
       return;
     }
-    state.pendingGiftId = id;
-    state.showGiftConfirm = true;
-  },
-
-  cancelGift() {
-    state.showGiftConfirm = false;
-    state.pendingGiftId = null;
-  },
-
-  confirmGift() {
-    const id = state.pendingGiftId;
-    if (!id) {
-      this.cancelGift();
-      return;
-    }
+    if (state._giftSending) return;
+    state._giftSending = true;
     const scene = this;
-    const meta = BALLOON_TYPES.find(b => b.id === id);
+    const meta = BALLOON_TYPES.find(b2 => b2.id === id);
     showToast('正在发起赠送…');
     sendBalloonGift(id, 1)
       .then((result) => {
-        if (result.ok) {
-          _shareAppMessage(
-            '送你一个「' + (meta ? meta.name : '传奇气球') + '」',
-            'giftId=' + encodeURIComponent(result.giftId),
-            '赠送已发起，请用右上角分享'
-          );
-          return syncBalloonInventoryFromCloud().then(() => {
-            scene._refresh();
-          });
+        state._giftSending = false;
+        if (!result.ok) {
+          showToast(result.reason || '赠送失败');
+          return;
         }
-        showToast(result.reason || '赠送失败');
+        state.showGiftConfirm = false;
+        state.pendingGiftId = null;
+        // 直接唤起微信分享，与分享气球束效果一致
+        if (typeof wx !== 'undefined' && wx.shareAppMessage) {
+          try {
+            wx.shareAppMessage({
+              title: '送你一个「' + (meta ? meta.name : '传奇气球') + '」',
+              query: 'giftId=' + encodeURIComponent(result.giftId),
+              imageUrl: ''
+            });
+          } catch (_) {
+            showToast('请使用右上角菜单分享');
+          }
+        } else {
+          showToast('已发起赠送，请用右上角菜单分享');
+        }
+        syncBalloonInventoryFromCloud().then(() => {
+          scene._refresh();
+        });
       })
       .catch((err) => {
-        console.warn('[collection.confirmGift]', err);
+        state._giftSending = false;
+        console.warn('[collection.openGiftConfirm]', err);
         showToast('赠送失败');
       });
-    state.showGiftConfirm = false;
-    state.pendingGiftId = null;
   },
 
   openPurchaseConfirm(id) {

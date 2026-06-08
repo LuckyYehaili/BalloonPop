@@ -1793,13 +1793,12 @@ module.exports = {
     const statsGap = 2;
     let statsH = 54;
     const gapStatsActions = 12;
-    let btn1H = 42;
+    let btnH = 48;
     const btnGap = 12;
-    let btn2H = 48;
     const maxModalH = Math.floor(H * 0.6);
     const minBouquet = 64;
     const packFixed = () =>
-      pyTop + bannerH + gapBannerBouquet + statsGap + statsH + gapStatsActions + btn1H + btnGap + btn2H + pyBottom;
+      pyTop + bannerH + gapBannerBouquet + statsGap + statsH + gapStatsActions + btnH + btnGap + btnH + pyBottom;
     let fixedH = packFixed();
     while (fixedH + minBouquet > maxModalH && statsH > 44) {
       statsH -= 2;
@@ -1809,9 +1808,8 @@ module.exports = {
       bannerH -= 2;
       fixedH = packFixed();
     }
-    while (fixedH + minBouquet > maxModalH && (btn2H > 38 || btn1H > 36)) {
-      if (btn2H > 38) btn2H -= 2;
-      if (btn1H > 36) btn1H -= 2;
+    while (fixedH + minBouquet > maxModalH && btnH > 38) {
+      btnH -= 2;
       fixedH = packFixed();
     }
     while (fixedH + minBouquet > maxModalH && pyTop > 6) {
@@ -1821,7 +1819,7 @@ module.exports = {
     while (fixedH > maxModalH - 52) {
       if (statsH > 38) { statsH -= 2; fixedH = packFixed(); continue; }
       if (bannerH > 38) { bannerH -= 2; fixedH = packFixed(); continue; }
-      if (btn2H > 32) { btn2H -= 2; btn1H -= 2; fixedH = packFixed(); continue; }
+      if (btnH > 32) { btnH -= 2; fixedH = packFixed(); continue; }
       break;
     }
     const bouquetCap = 200;
@@ -1859,7 +1857,7 @@ module.exports = {
     const trophySize = 22, trophyGap = 8;
     const bannerText = state.synInflateComplete
       ? '合成气球束完成！'
-      : ('第 ' + (state.currentLevelIdx + 1) + ' 关全部完成！');
+      : ('第 ' + (state.currentLevelIdx + 1) + ' 关全部完成');
     const bannerTW = measureText(ctx, bannerText, 18, 700);
     const bannerTotalW = trophySize + trophyGap + bannerTW + trophyGap + trophySize;
     const bannerStartX = W / 2 - bannerTotalW / 2;
@@ -1935,7 +1933,7 @@ module.exports = {
       g.addColorStop(1, 'rgba(125,211,192,0.08)');
       return g;
     };
-    const b1 = drawButtonGradient(ctx, mx + px, actionsY, btnW, btn1H, '分享气球束', shareGrad, '#a7f3d0', 14, 12, 'rgba(134,239,172,0.25)', 500);
+    const b1 = drawButtonGradient(ctx, mx + px, actionsY, btnW, btnH, '分享气球束', shareGrad, '#a7f3d0', 14, 12, 'rgba(134,239,172,0.25)', 500);
     this.manager.addTouchable(b1.x, b1.y, b1.w, b1.h, 'openSharePreview');
     const b2text = state.synInflateComplete
       ? '完成'
@@ -1947,7 +1945,7 @@ module.exports = {
       g.addColorStop(1, '#7dd3c0');
       return g;
     };
-    const b2 = drawButtonGradient(ctx, mx + px, actionsY + btn1H + btnGap, btnW, btn2H, b2text, mainGrad, '#0b2018', 14, 14, 'rgba(134,239,172,0.35)', 700);
+    const b2 = drawButtonGradient(ctx, mx + px, actionsY + btnH + btnGap, btnW, btnH, b2text, mainGrad, '#0b2018', 14, 14, 'rgba(134,239,172,0.35)', 700);
     this.manager.addTouchable(b2.x, b2.y, b2.w, b2.h, b2h);
   },
   levelCompleteNext() {
@@ -2450,7 +2448,13 @@ module.exports = {
       priceYuan: LEGEND_PRICE_YUAN_DEFAULT,
       showToast,
       onSuccess() {
-        store.equipLegend(state.currentLevelIdx, bId);
+        // 装备传奇气球，如果库存未同步则先手动补一条
+        if (!store.equipLegend(state.currentLevelIdx, bId)) {
+          if (!store.hasBalloon(bId)) {
+            store.addBalloon(bId, 1, 'purchase');
+          }
+          store.equipLegend(state.currentLevelIdx, bId);
+        }
         state.paidBalloonUsed = true;
         state.showLegendPayConfirm = false;
         state.legendPayBalloonId = null;
