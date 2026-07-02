@@ -463,6 +463,11 @@ module.exports = {
     const currentSeqItem = equippedMeta || seq[balloonIdx] || seq[0];
 
     state.level = lv;
+    // 每个气球有独立的充气目标范围
+    if (lv.balloonRanges && lv.balloonRanges[balloonIdx]) {
+      const r = lv.balloonRanges[balloonIdx];
+      state.level = Object.assign({}, lv, { targetMin: r[0], targetMax: r[1] });
+    }
     state.bgKey = bg;
     state.currentColor = currentSeqItem.color;
     state.currentGlow = currentSeqItem.glowColor;
@@ -2449,11 +2454,20 @@ module.exports = {
       showToast,
       onSuccess() {
         // 装备传奇气球，如果库存未同步则先手动补一条
-        if (!store.equipLegend(state.currentLevelIdx, bId)) {
+        let equipped = store.equipLegend(state.currentLevelIdx, bId);
+        if (!equipped) {
           if (!store.hasBalloon(bId)) {
             store.addBalloon(bId, 1, 'purchase');
           }
-          store.equipLegend(state.currentLevelIdx, bId);
+          equipped = store.equipLegend(state.currentLevelIdx, bId);
+        }
+        if (!equipped) {
+          // 装备失败（如该传奇在此关已使用过），保持弹窗让用户重新选择
+          const check = store.canEquipLegend(state.currentLevelIdx, bId);
+          showToast((check && check.reason) || '装备失败');
+          state.showLegendPayConfirm = false;
+          state.legendPayBalloonId = null;
+          return;
         }
         state.paidBalloonUsed = true;
         state.showLegendPayConfirm = false;

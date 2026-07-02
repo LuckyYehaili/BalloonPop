@@ -149,10 +149,14 @@ function _buildLegend(rows) {
 const BALLOON_TYPES = _buildCommon(_LEVEL_BALLOONS).concat(_buildLegend(_LEGEND_BALLOONS));
 
 const LEVELS = [
-  { id: 1, name: "糖果乐园", targetMin: 70, targetMax: 85, background: "candy",  description: "甜蜜的开始",         difficulty: 1, zoneWidth: 15, emojiSeq: "candy"  },
-  { id: 2, name: "霓虹街道", targetMin: 78, targetMax: 88, background: "neon",   description: "城市的夜晚",         difficulty: 2, zoneWidth: 10, emojiSeq: "neon"   },
-  { id: 3, name: "暗红熔炉", targetMin: 80, targetMax: 87, background: "lava",   description: "极限高温挑战",       difficulty: 3, zoneWidth: 7,  emojiSeq: "lava"   },
-  { id: 4, name: "云端神殿", targetMin: 83, targetMax: 86, background: "temple", description: "隐藏指针，感受气息", difficulty: 4, zoneWidth: 3,  emojiSeq: "temple" }
+  { id: 1, name: "糖果乐园", targetMin: 70, targetMax: 85, background: "candy",  description: "甜蜜的开始",         difficulty: 1, zoneWidth: 15, emojiSeq: "candy",
+    balloonRanges: [[72,80],[74,82],[71,79],[75,83],[73,81],[70,78],[74,82],[72,80],[75,83],[71,79]] },
+  { id: 2, name: "霓虹街道", targetMin: 78, targetMax: 88, background: "neon",   description: "城市的夜晚",         difficulty: 2, zoneWidth: 10, emojiSeq: "neon",
+    balloonRanges: [[79,85],[81,87],[78,84],[82,88],[80,86],[77,83],[81,87],[79,85],[82,88],[78,84]] },
+  { id: 3, name: "暗红熔炉", targetMin: 80, targetMax: 87, background: "lava",   description: "极限高温挑战",       difficulty: 3, zoneWidth: 7,  emojiSeq: "lava",
+    balloonRanges: [[81,85],[83,87],[80,84],[84,88],[82,86],[79,83],[83,87],[81,85],[84,88],[80,84]] },
+  { id: 4, name: "云端神殿", targetMin: 83, targetMax: 86, background: "temple", description: "隐藏指针，感受气息", difficulty: 4, zoneWidth: 3,  emojiSeq: "temple",
+    balloonRanges: [[83,85],[85,87],[82,84],[86,88],[84,86],[81,83],[85,87],[83,85],[86,88],[82,84]] }
 ];
 
 const TEAM_MEMBERS = [
