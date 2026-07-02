@@ -264,13 +264,20 @@ function _exportCanvasToTempFile(canvas, w, h) {
 let _bgImg = null;
 let _bgImgLoaded = false;
 let _bgImgFailed = false;
+let _bgImgPromise = null;
 
 function _loadBgImage() {
-  if (_bgImgLoaded || _bgImgFailed || typeof wx === 'undefined' || typeof wx.createImage !== 'function') return;
-  _bgImg = wx.createImage();
-  _bgImg.onload = () => { _bgImgLoaded = true; };
-  _bgImg.onerror = () => { _bgImgFailed = true; _bgImg = null; };
-  _bgImg.src = 'images/ui/bg2.jpg';
+  if (_bgImgLoaded) return Promise.resolve();
+  if (_bgImgFailed) return Promise.reject(new Error('bg load failed'));
+  if (_bgImgPromise) return _bgImgPromise;
+  if (typeof wx === 'undefined' || typeof wx.createImage !== 'function') return Promise.reject(new Error('no wx'));
+  _bgImgPromise = new Promise((resolve, reject) => {
+    _bgImg = wx.createImage();
+    _bgImg.onload = () => { _bgImgLoaded = true; resolve(); };
+    _bgImg.onerror = (e) => { _bgImgFailed = true; _bgImg = null; reject(e); };
+    _bgImg.src = 'images/ui/bg2.jpg';
+  });
+  return _bgImgPromise;
 }
 
 function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
@@ -308,8 +315,7 @@ function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
   const bqH = H - top - bottom;
   const bqW = W - padX * 2;
 
-  // bg2.jpg 在气球束后面作为背景
-  if (!_bgImgLoaded && !_bgImgFailed) _loadBgImage();
+  // bg2.jpg 在气球束后面作为背景（图片已在 createBouquetPosterFile 中预加载）
   if (_bgImgLoaded && _bgImg) {
     ctx.save();
     // 裁剪到气球区域，避免溢出卡片
@@ -401,10 +407,14 @@ function createBouquetPosterFile(opts) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return Promise.reject(new Error('no ctx'));
 
-  _drawSharePoster(ctx, w, h, balloons, posterTitle, subtitle);
-
-  return _waitPaintSettled(canvas)
-    .then(() => _exportCanvasToTempFile(canvas, w, h))
+  // 等待背景图加载完成（失败也不阻塞，回退纯黑底）
+  return _loadBgImage()
+    .catch(() => { /* 背景图加载失败，继续绘制纯黑底 */ })
+    .then(() => {
+      _drawSharePoster(ctx, w, h, balloons, posterTitle, subtitle);
+      return _waitPaintSettled(canvas)
+        .then(() => _exportCanvasToTempFile(canvas, w, h));
+    })
     .catch((err) => {
       _shareCanvas = null;
       _shareCanvasW = 0;
