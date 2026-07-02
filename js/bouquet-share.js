@@ -276,29 +276,14 @@ function _loadBgImage() {
 function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
   ctx.clearRect(0, 0, W, H);
 
-  // 背景：优先使用 bg2.jpg，失败时回退渐变
-  if (!_bgImgLoaded && !_bgImgFailed) _loadBgImage();
-  if (_bgImgLoaded && _bgImg) {
-    ctx.drawImage(_bgImg, 0, 0, W, H);
-  } else {
-    const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#0a2e24');
-    bg.addColorStop(0.55, '#061a16');
-    bg.addColorStop(1, '#030e0c');
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-  }
-
+  // 黑色圆角容器
   const cardX = 8;
   const cardY = 8;
   const cardW = W - 16;
   const cardH = H - 16;
   ctx.save();
   roundRect(ctx, cardX, cardY, cardW, cardH, 20);
-  const cardGrad = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
-  cardGrad.addColorStop(0, 'rgba(8,40,30,0.75)');
-  cardGrad.addColorStop(1, 'rgba(4,20,18,0.75)');
-  ctx.fillStyle = cardGrad;
+  ctx.fillStyle = '#000';
   ctx.fill();
   ctx.strokeStyle = 'rgba(134,239,172,0.5)';
   ctx.lineWidth = 2;
@@ -322,6 +307,30 @@ function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
   const bqY = top;
   const bqH = H - top - bottom;
   const bqW = W - padX * 2;
+
+  // bg2.jpg 在气球束后面作为背景
+  if (!_bgImgLoaded && !_bgImgFailed) _loadBgImage();
+  if (_bgImgLoaded && _bgImg) {
+    ctx.save();
+    // 裁剪到气球区域，避免溢出卡片
+    roundRect(ctx, cardX + 2, cardY + 2, cardW - 4, cardH - 4, 18);
+    ctx.clip();
+    ctx.drawImage(_bgImg, cardX, bqY, cardW, bqH);
+    // 气球区域底部渐隐，让黑底托住文字
+    const fadeGrad = ctx.createLinearGradient(0, bqY + bqH - 40, 0, bqY + bqH);
+    fadeGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    fadeGrad.addColorStop(1, 'rgba(0,0,0,0.85)');
+    ctx.fillStyle = fadeGrad;
+    ctx.fillRect(cardX, bqY + bqH - 40, cardW, 40);
+    // 顶部也渐隐，让标题清晰
+    const fadeTop = ctx.createLinearGradient(0, bqY, 0, bqY + 30);
+    fadeTop.addColorStop(0, 'rgba(0,0,0,0.85)');
+    fadeTop.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = fadeTop;
+    ctx.fillRect(cardX, bqY, cardW, 30);
+    ctx.restore();
+  }
+
   drawBouquetStillFrame(ctx, balloons, padX, bqY, bqW, bqH, { layout: 'centered' });
 
   drawText(ctx, '不准爆！', W / 2, H - 16, 'rgba(134,239,172,0.45)', 11, 'center', undefined, 500);
