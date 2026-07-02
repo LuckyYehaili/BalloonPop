@@ -261,15 +261,33 @@ function _exportCanvasToTempFile(canvas, w, h) {
     });
 }
 
+let _bgImg = null;
+let _bgImgLoaded = false;
+let _bgImgFailed = false;
+
+function _loadBgImage() {
+  if (_bgImgLoaded || _bgImgFailed || typeof wx === 'undefined' || typeof wx.createImage !== 'function') return;
+  _bgImg = wx.createImage();
+  _bgImg.onload = () => { _bgImgLoaded = true; };
+  _bgImg.onerror = () => { _bgImgFailed = true; _bgImg = null; };
+  _bgImg.src = 'images/ui/bg2.jpg';
+}
+
 function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
   ctx.clearRect(0, 0, W, H);
 
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#0a2e24');
-  bg.addColorStop(0.55, '#061a16');
-  bg.addColorStop(1, '#030e0c');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
+  // 背景：优先使用 bg2.jpg，失败时回退渐变
+  if (!_bgImgLoaded && !_bgImgFailed) _loadBgImage();
+  if (_bgImgLoaded && _bgImg) {
+    ctx.drawImage(_bgImg, 0, 0, W, H);
+  } else {
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a2e24');
+    bg.addColorStop(0.55, '#061a16');
+    bg.addColorStop(1, '#030e0c');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   const cardX = 8;
   const cardY = 8;
@@ -278,8 +296,8 @@ function _drawSharePoster(ctx, W, H, balloons, posterTitle, subtitle) {
   ctx.save();
   roundRect(ctx, cardX, cardY, cardW, cardH, 20);
   const cardGrad = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
-  cardGrad.addColorStop(0, 'rgba(8,40,30,0.98)');
-  cardGrad.addColorStop(1, 'rgba(4,20,18,0.98)');
+  cardGrad.addColorStop(0, 'rgba(8,40,30,0.75)');
+  cardGrad.addColorStop(1, 'rgba(4,20,18,0.75)');
   ctx.fillStyle = cardGrad;
   ctx.fill();
   ctx.strokeStyle = 'rgba(134,239,172,0.5)';
