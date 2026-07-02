@@ -2309,7 +2309,7 @@ module.exports = {
       const inflated = hasIt && !equipCheck.ok && equipCheck.reason === '已充气';
       let subLabel = '未拥有';
       if (hasIt) {
-        if (inflated) subLabel = '已充气';
+        if (inflated) subLabel = '已充气 · 可再购';
         else subLabel = '已拥有 ' + own.quantity;
       }
       ctx.save();
@@ -2332,7 +2332,7 @@ module.exports = {
       drawText(ctx, subLabel, gx + cellW / 2, gy + 76, inflated ? 'rgba(255,152,0,0.85)' : (hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)'), 12, 'center');
       ctx.globalAlpha = 1;
       ctx.restore();
-      if (!state.showLegendPayConfirm && !inflated) {
+      if (!state.showLegendPayConfirm) {
         const hitTop = gy - scrollY;
         const hitBottom = hitTop + cellH;
         if (hitBottom > gridY && hitTop < gridY + viewportH) {
@@ -2406,11 +2406,19 @@ module.exports = {
     if (!bId) return;
     if (store.hasBalloon(bId)) {
       const check = store.canEquipLegend(state.currentLevelIdx, bId);
-      if (!check.ok) {
-        showToast(check.reason || '无法装备');
+      if (check.ok) {
+        this._equipLegendFromModal(bId);
         return;
       }
-      this._equipLegendFromModal(bId);
+      // 已充气 → 允许再次购买
+      if (check.reason === '已充气') {
+        if (toastIfLegendPurchaseBlocked(showToast)) return;
+        state.legendPayBalloonId = bId;
+        state.showLegendPayConfirm = true;
+        state._legendSelectDrag = null;
+        return;
+      }
+      showToast(check.reason || '无法装备');
       return;
     }
     if (toastIfLegendPurchaseBlocked(showToast)) return;
@@ -2443,7 +2451,7 @@ module.exports = {
 
   confirmLegendPay() {
     const bId = state.legendPayBalloonId;
-    if (!bId || store.hasBalloon(bId)) {
+    if (!bId) {
       state.showLegendPayConfirm = false;
       state.legendPayBalloonId = null;
       return;

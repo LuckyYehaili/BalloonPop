@@ -253,10 +253,9 @@ function canEquipLegend(levelIndex, bId) {
   const d = _load();
   const e = d.ownedBalloons && d.ownedBalloons[bId];
   if (!e || _availableQty(e) < 1) return { ok: false, reason: '未拥有' };
-  const levelNum = levelIndex + 1;
   const used = getLegendUsedLevels(bId);
   const avail = _availableQty(e);
-  if (used.includes(levelNum)) return { ok: false, reason: '已充气' };
+  // 纯数量检查：已使用次数 < 拥有数量 → 还有可用副本
   if (used.length >= avail) return { ok: false, reason: '已充气' };
   return { ok: true };
 }
