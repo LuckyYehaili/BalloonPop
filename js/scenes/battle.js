@@ -2309,28 +2309,26 @@ module.exports = {
       const inflated = hasIt && !equipCheck.ok && equipCheck.reason === '已充气';
       let subLabel = '未拥有';
       if (hasIt) {
-        if (inflated) subLabel = '已充气 · 可再购';
+        if (inflated) subLabel = '已拥有 ' + own.quantity + ' · 可再购';
         else subLabel = '已拥有 ' + own.quantity;
       }
       ctx.save();
       roundRect(ctx, gx, gy, cellW, cellH, 12);
-      ctx.fillStyle = inflated ? 'rgba(255,255,255,0.03)' : (hasIt ? 'rgba(255,215,0,0.06)' : 'rgba(255,255,255,0.04)');
+      ctx.fillStyle = hasIt ? 'rgba(255,215,0,0.06)' : 'rgba(255,255,255,0.04)';
       ctx.fill();
-      ctx.strokeStyle = inflated ? 'rgba(255,255,255,0.12)' : (hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.08)');
+      ctx.strokeStyle = hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.08)';
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.save();
       ctx.beginPath();
       ctx.arc(gx + cellW / 2, gy + 24, 22, 0, Math.PI * 2);
-      ctx.strokeStyle = inflated ? 'rgba(255,255,255,0.2)' : (hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)');
+      ctx.strokeStyle = hasIt ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)';
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
-      ctx.globalAlpha = inflated ? 0.55 : 1;
       drawText(ctx, l.emoji, gx + cellW / 2, gy + 24, '#ffffff', 22, 'center');
-      drawText(ctx, l.name, gx + cellW / 2, gy + 56, inflated ? 'rgba(255,255,255,0.45)' : '#ffffff', 14, 'center', undefined, 600);
-      drawText(ctx, subLabel, gx + cellW / 2, gy + 76, inflated ? 'rgba(255,152,0,0.85)' : (hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)'), 12, 'center');
-      ctx.globalAlpha = 1;
+      drawText(ctx, l.name, gx + cellW / 2, gy + 56, '#ffffff', 14, 'center', undefined, 600);
+      drawText(ctx, subLabel, gx + cellW / 2, gy + 76, hasIt ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)', 12, 'center');
       ctx.restore();
       if (!state.showLegendPayConfirm) {
         const hitTop = gy - scrollY;
