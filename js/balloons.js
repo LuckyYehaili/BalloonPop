@@ -152,11 +152,11 @@ const LEVELS = [
   { id: 1, name: "糖果乐园", targetMin: 70, targetMax: 85, background: "candy",  description: "甜蜜的开始",         difficulty: 1, zoneWidth: 15, emojiSeq: "candy",
     balloonRanges: [[72,80],[74,82],[71,79],[75,83],[73,81],[70,78],[74,82],[72,80],[75,83],[71,79]] },
   { id: 2, name: "霓虹街道", targetMin: 78, targetMax: 88, background: "neon",   description: "城市的夜晚",         difficulty: 2, zoneWidth: 10, emojiSeq: "neon",
-    balloonRanges: [[79,85],[81,87],[78,84],[82,88],[80,86],[77,83],[81,87],[79,85],[82,88],[78,84]] },
+    balloonRanges: [[79,83],[81,85],[78,82],[82,86],[80,84],[77,81],[81,85],[79,83],[82,86],[78,82]] },
   { id: 3, name: "暗红熔炉", targetMin: 80, targetMax: 87, background: "lava",   description: "极限高温挑战",       difficulty: 3, zoneWidth: 7,  emojiSeq: "lava",
-    balloonRanges: [[81,85],[83,87],[80,84],[84,88],[82,86],[79,83],[83,87],[81,85],[84,88],[80,84]] },
+    balloonRanges: [[81,84],[83,86],[80,83],[84,87],[82,85],[79,82],[83,86],[81,84],[84,87],[80,83]] },
   { id: 4, name: "云端神殿", targetMin: 83, targetMax: 86, background: "temple", description: "隐藏指针，感受气息", difficulty: 4, zoneWidth: 3,  emojiSeq: "temple",
-    balloonRanges: [[83,85],[85,87],[82,84],[86,88],[84,86],[81,83],[85,87],[83,85],[86,88],[82,84]] }
+    balloonRanges: [[83,84],[85,86],[82,83],[86,87],[84,85],[81,82],[85,86],[83,84],[86,87],[82,83]] }
 ];
 
 const TEAM_MEMBERS = [
