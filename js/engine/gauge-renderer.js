@@ -40,7 +40,9 @@ function drawGauge(ctx, cx, cy, SIZE, pressure, targetMin, targetMax, isHidden, 
 
   // ─── 4. 目标区 / 安全区发光（柔化：低饱和绿 + 弱 glow） ──
   const tStart = startAngle + (targetMin / 100) * totalAngle;
-  const tEnd = startAngle + (targetMax / 100) * totalAngle;
+  // 确保目标区至少有最小弧度，单点目标也能显示为可见的绿色线
+  const minArcFraction = 0.8 / 100; // 至少占 0.8% 的弧长
+  const tEnd = Math.max(startAngle + (targetMax / 100) * totalAngle, tStart + minArcFraction * totalAngle);
   const pulse = Math.sin(time * 3) * 0.35 + 0.65;
   ctx.beginPath(); ctx.arc(cx, cy, R, tStart, tEnd);
   ctx.strokeStyle = `rgba(134,239,172,${0.45 + pulse * 0.28})`;

@@ -1130,9 +1130,12 @@ module.exports = {
 
   _checkPressure() {
     const p = state.pressure;
-    const { targetMin, targetMax } = state.level;
-    if (p >= targetMin && p <= targetMax) {
-      state.isPerfect = p >= targetMin + 0.5 && p <= targetMax - 0.5;
+    let { targetMin, targetMax } = state.level;
+    // 单点目标（如第4关宽度1）加±0.5容差，否则浮点数压力无法精确命中
+    const effMin = targetMin === targetMax ? targetMin - 0.5 : targetMin;
+    const effMax = targetMin === targetMax ? targetMax + 0.5 : targetMax;
+    if (p >= effMin && p <= effMax) {
+      state.isPerfect = p >= effMin + 0.5 && p <= effMax - 0.5;
       if (state.synInflateRun) {
         const isLast = state.synQueueIdx >= state.synInflateQueue.length - 1;
         if (isLast) {
@@ -1160,7 +1163,7 @@ module.exports = {
       state.gameState = 'success';
       return;
     }
-    if (p > targetMax) { this._failPump('high', p); return; }
+    if (p > effMax) { this._failPump('high', p); return; }
     this._failPump('low', p);
   },
 
