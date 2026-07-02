@@ -1,5 +1,6 @@
 /**
  * 充气挑战页 — 呼吸感背景 + 漂浮氛围装饰
+ * 性能优化：氛围层预渲染到离屏 Canvas，避免每帧创建渐变
  */
 const { LEVEL_BG } = require('./canvas-ui');
 
@@ -66,6 +67,96 @@ function _orbMotion(period, phase, t) {
     dy: Math.cos(p * Math.PI * 2) * 10 - 5,
     alpha: 0.14 + (wave * 0.5 + 0.5) * 0.1
   };
+}
+
+// ─── 离屏缓存：避免每帧创建渐变 ────────────────
+let _cachedCanvas = null;
+let _cachedKey = null;
+let _cachedW = 0;
+let _cachedH = 0;
+let _cachedTime = 0;
+const CACHE_INTERVAL = 0.15; // 每 0.15s 刷新一次缓存（约 7fps 更新静态层）
+
+function _getOrCreateCacheCanvas(W, H) {
+  if (_cachedCanvas && _cachedW === W && _cachedH === H) return _cachedCanvas;
+  if (typeof wx !== 'undefined' && typeof wx.createCanvas === 'function') {
+    _cachedCanvas = wx.createCanvas();
+  } else if (typeof document !== 'undefined') {
+    _cachedCanvas = document.createElement('canvas');
+  }
+  if (_cachedCanvas) {
+    _cachedCanvas.width = W;
+    _cachedCanvas.height = H;
+  }
+  _cachedW = W;
+  _cachedH = H;
+  return _cachedCanvas;
+}
+
+function _renderAmbientToCache(ctx, W, H, bgKey, t) {
+  const cache = _getOrCreateCacheCanvas(W, H);
+  if (!cache) return null;
+  const cctx = cache.getContext('2d');
+  if (!cctx) return null;
+
+  cctx.clearRect(0, 0, W, H);
+
+  // 背景渐变（静态部分）
+  const base = LEVEL_BG[bgKey] || LEVEL_BG.candy;
+  const g = cctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, base[0]);
+  g.addColorStop(0.45, base[1]);
+  g.addColorStop(1, base[2]);
+  cctx.fillStyle = g;
+  cctx.fillRect(0, 0, W, H);
+
+  // 光斑（静态位置，无动画）
+  const glow = THEME_GLOW[bgKey] || THEME_GLOW.candy;
+  const blobs = [
+    { x: 0.2, y: 0.25, r: 0.28, phase: 0 },
+    { x: 0.8, y: 0.7, r: 0.25, phase: 1.8 },
+    { x: 0.5, y: 0.5, r: 0.21, phase: 3.1 }
+  ];
+  blobs.forEach((b, i) => {
+    const cx = b.x * W;
+    const cy = b.y * H;
+    const rad = Math.min(W, H) * b.r;
+    const rg = cctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    const col = i % 2 === 0 ? glow.a : glow.b;
+    rg.addColorStop(0, col + '0.18)');
+    rg.addColorStop(0.55, col + '0.06)');
+    rg.addColorStop(1, col + '0)');
+    cctx.fillStyle = rg;
+    cctx.fillRect(0, 0, W, H);
+  });
+
+  // 浮游光点（静态位置）
+  ORBS.forEach((o, i) => {
+    const px = o.x * W;
+    const py = o.y * H;
+    const col = i % 2 === 0 ? glow.a : glow.b;
+    const rg = cctx.createRadialGradient(px, py, 0, px, py, o.r);
+    rg.addColorStop(0, col + '0.18)');
+    rg.addColorStop(0.6, col + '0.06)');
+    rg.addColorStop(1, col + '0)');
+    cctx.beginPath();
+    cctx.arc(px, py, o.r, 0, Math.PI * 2);
+    cctx.fillStyle = rg;
+    cctx.fill();
+  });
+
+  // emoji 装饰（无 shadowBlur，大幅减少 GPU 负担）
+  cctx.textAlign = 'center';
+  cctx.textBaseline = 'middle';
+  FLOAT_DECOR.forEach((d) => {
+    const fs = d.size;
+    cctx.font = fs + 'px sans-serif';
+    cctx.globalAlpha = 0.25;
+    cctx.fillText(d.emoji, d.x * W, d.y * H);
+  });
+  cctx.globalAlpha = 1;
+
+  return cache;
 }
 
 function drawBreathingBackground(ctx, W, H, bgKey, t) {
@@ -138,18 +229,35 @@ function drawFloatDecor(ctx, W, H, t) {
     const fs = d.size;
     ctx.font = fs + 'px sans-serif';
     ctx.globalAlpha = alpha;
-    ctx.shadowColor = 'rgba(255,255,255,0.2)';
-    ctx.shadowBlur = 3;
     ctx.fillText(d.emoji, px, py);
-    ctx.shadowBlur = 0;
   });
   ctx.globalAlpha = 1;
   ctx.restore();
 }
 
-/** 充气页全屏氛围（在 UI 之下绘制） */
+/** 充气页全屏氛围（在 UI 之下绘制）
+ *  性能优化：使用离屏缓存，避免每帧创建大量渐变 */
 function drawBattleAmbient(ctx, W, H, bgKey, time) {
   const t = time || 0;
+
+  // 检查是否需要刷新缓存（主题变化 / 尺寸变化 / 超过刷新间隔）
+  const needRefresh = !_cachedCanvas || _cachedKey !== bgKey || _cachedW !== W || _cachedH !== H || (t - _cachedTime) > CACHE_INTERVAL;
+
+  if (needRefresh) {
+    const cache = _renderAmbientToCache(ctx, W, H, bgKey, t);
+    if (cache) {
+      _cachedKey = bgKey;
+      _cachedTime = t;
+      ctx.drawImage(cache, 0, 0);
+      return;
+    }
+  } else {
+    // 直接绘制缓存
+    ctx.drawImage(_cachedCanvas, 0, 0);
+    return;
+  }
+
+  // 回退：缓存不可用时直接绘制（不应发生）
   drawBreathingBackground(ctx, W, H, bgKey, t);
   drawFloatOrbs(ctx, W, H, bgKey, t);
   drawFloatDecor(ctx, W, H, t);
