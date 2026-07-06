@@ -153,9 +153,9 @@ const LEVELS = [
     balloonRanges: [[72,79],[74,81],[71,78],[75,82],[73,80],[70,77],[74,81],[72,79],[75,82],[71,78]] },
   { id: 2, name: "霓虹街道", targetMin: 78, targetMax: 88, background: "neon",   description: "城市的夜晚",         difficulty: 2, zoneWidth: 10, emojiSeq: "neon", pumpInstability: 0.3,
     balloonRanges: [[79,82],[81,84],[78,81],[82,85],[80,83],[77,80],[81,84],[79,82],[82,85],[78,81]] },
-  { id: 3, name: "暗红熔炉", targetMin: 80, targetMax: 87, background: "lava",   description: "极限高温挑战",       difficulty: 3, zoneWidth: 7,  emojiSeq: "lava", pumpInstability: 0.7,
+  { id: 3, name: "暗红熔炉", targetMin: 80, targetMax: 87, background: "lava",   description: "极限高温挑战",       difficulty: 3, zoneWidth: 7,  emojiSeq: "lava", pumpInstability: 0.6,
     balloonRanges: [[81,83],[83,85],[80,82],[84,86],[82,84],[79,81],[83,85],[81,83],[84,86],[80,82]] },
-  { id: 4, name: "云端神殿", targetMin: 83, targetMax: 86, background: "temple", description: "隐藏指针，感受气息", difficulty: 4, zoneWidth: 3,  emojiSeq: "temple", pumpInstability: 1.2,
+  { id: 4, name: "云端神殿", targetMin: 83, targetMax: 86, background: "temple", description: "隐藏指针，感受气息", difficulty: 4, zoneWidth: 3,  emojiSeq: "temple", pumpInstability: 0.85,
     balloonRanges: [[83,83],[85,85],[82,82],[86,86],[84,84],[81,81],[85,85],[83,83],[86,86],[82,82]] }
 ];
 

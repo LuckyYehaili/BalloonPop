@@ -914,7 +914,7 @@ module.exports = {
     if (this._pumpTimer) clearInterval(this._pumpTimer);
     this._startPumpAudio();
     // 关卡打气不稳定性：值越大，每次增量波动越大，越难精准停在目标点
-    // L1=0(均匀) L2=0.3(微扰) L3=0.7(明显波动) L4=1.2(剧烈跳动)
+    // L1=0(均匀) L2=0.3(微扰) L3=0.6(明显波动) L4=0.85(剧烈跳动)
     const instability = (state.level && state.level.pumpInstability) || 0;
     this._pumpTimer = setInterval(() => {
       const base = 0.8 + Math.random() * 0.4; // 基础增量 0.8~1.2
